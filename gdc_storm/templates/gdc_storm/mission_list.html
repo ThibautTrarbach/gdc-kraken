@@ -99,6 +99,26 @@
                         {% endif %}
                     </a>
                 </th>
+                <th style="white-space:nowrap;vertical-align:top;">
+                    <a href="#" onclick="setSort('jouee');return false;" style="text-decoration:none;color:inherit;">
+                        Jouée (nb)
+                        {% if sort == 'jouee' %}
+                            {% if order == 'asc' %}<span style="color:#222;">▲</span>{% else %}<span style="color:#222;">▼</span>{% endif %}
+                        {% else %}
+                            <span style="color:#bbb;">▲</span>
+                        {% endif %}
+                    </a>
+                </th>
+                <th style="white-space:nowrap;vertical-align:top;">
+                    <a href="#" onclick="setSort('derniere');return false;" style="text-decoration:none;color:inherit;">
+                        Dernière fois
+                        {% if sort == 'derniere' %}
+                            {% if order == 'asc' %}<span style="color:#222;">▲</span>{% else %}<span style="color:#222;">▼</span>{% endif %}
+                        {% else %}
+                            <span style="color:#bbb;">▲</span>
+                        {% endif %}
+                    </a>
+                </th>
             </tr>
         </thead>
         <tbody id="missions-table-body">
@@ -123,6 +143,14 @@
                                 <td>{{ mission.get_status_display }}</td>
                                 <td>{% if mission.min_players %}{{ mission.min_players }}{% else %}-{% endif %}</td>
                                 <td>{{ mission.max_players }}</td>
+                                <td>{{ mission.played_count|default:0 }}</td>
+                                <td>
+                                    {% if mission.last_played_at %}
+                                        {{ mission.last_played_at|date:'d/m/Y' }}
+                                    {% else %}
+                                        -
+                                    {% endif %}
+                                </td>
                         </tr>
             {% endwith %}
         {% endfor %}

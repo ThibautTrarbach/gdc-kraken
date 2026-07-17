@@ -34,6 +34,7 @@ from collections import defaultdict
 import secrets
 
 from django.core.cache import cache
+from django.db.models import Count, Max
 from django.shortcuts import render, get_object_or_404, redirect
 from django.http import HttpResponse, JsonResponse
 from django.urls import reverse
@@ -282,18 +283,27 @@ def mission_list(request):
         'type': 'type',
         'carte': 'map',
         'date': 'publication_date',
+        'jouee': 'played_count',
+        'derniere': 'last_played_at',
         'id': 'id',
     }
     sort_field = sort_fields.get(sort, 'id')
+
+    # Ajoute les infos "combien de fois jouée" + "dernière fois jouée"
+    missions_qs = Mission.objects.all().annotate(
+        played_count=Count('game_sessions'),
+        last_played_at=Max('game_sessions__start_time'),
+    )
+
     if sort == 'carte':
         # Tri personnalisé sur le display_name de la carte
-        missions = list(Mission.objects.all())
+        missions = list(missions_qs)
         map_display = lambda m: get_map_display(m.map).lower() if get_map_display(m.map) else ''
         missions.sort(key=map_display, reverse=(order == 'desc'))
     else:
         if order == 'desc':
             sort_field = '-' + sort_field
-        missions = Mission.objects.all().order_by(sort_field)
+        missions = missions_qs.order_by(sort_field)
     # Cache global pour les noms de map
     MAP_CACHE_KEY = 'map_display_names_v1'
     map_display_cache = cache.get(MAP_CACHE_KEY)
