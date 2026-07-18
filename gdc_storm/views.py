@@ -25,12 +25,12 @@ def change_password(request):
 
 import re
 import uuid
-import os
 import logging
-import glob
+import shutil
 import tempfile
 import datetime
 from collections import defaultdict
+from pathlib import Path
 import secrets
 
 from django.core.cache import cache
@@ -72,15 +72,25 @@ def user_is_mission_maker(user):
 
 def clean_temp_files(temp_dir, max_age_seconds=3600):
     """Supprime les fichiers temporaires plus vieux que max_age_seconds dans temp_dir."""
-    now = int(os.path.getmtime(temp_dir)) if os.path.exists(temp_dir) else 0
-    for temp_file in glob.glob(os.path.join(temp_dir, '*')):
+    temp_dir = Path(temp_dir)
+    if not temp_dir.exists():
+        return
+    now = temp_dir.stat().st_mtime
+    for temp_file in temp_dir.iterdir():
         try:
-            if os.path.isfile(temp_file):
-                age = int(os.path.getmtime(temp_file))
-                if now - age > max_age_seconds:
-                    os.remove(temp_file)
+            if temp_file.is_file() and now - temp_file.stat().st_mtime > max_age_seconds:
+                temp_file.unlink()
         except Exception as e:
             logging.warning(f"Erreur lors du nettoyage du fichier temporaire {temp_file}: {e}")
+
+
+def save_pbo_to_storage(temp_file_path, filename):
+    """Déplace un PBO temporaire vers le stockage (cross-device + Windows via pathlib/shutil)."""
+    src = Path(temp_file_path)
+    dest = Path(settings.MISSIONS_PBO_STORAGE_PATH) / filename
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    shutil.move(src, dest)
+    return dest
 
 # Upload mission view
 @login_required
@@ -91,8 +101,8 @@ def upload_mission(request):
     duplicate_missions = []
     temp_file_path = None
     temp_file_name = None
-    temp_dir = os.path.join(tempfile.gettempdir(), 'gdc_storm')
-    os.makedirs(temp_dir, exist_ok=True)
+    temp_dir = Path(tempfile.gettempdir()) / 'gdc_storm'
+    temp_dir.mkdir(parents=True, exist_ok=True)
     # Nettoyage automatique des fichiers temporaires orphelins (plus d'1h)
     clean_temp_files(temp_dir)
     if not user_is_mission_maker(request.user):
@@ -103,17 +113,18 @@ def upload_mission(request):
             pbo_file = request.FILES['pbo_file']
             filename = pbo_file.name
             temp_file_name = f"{uuid.uuid4()}_{filename}"
-            temp_file_path = os.path.join(temp_dir, temp_file_name)
-            with open(temp_file_path, 'wb+') as destination:
+            temp_file_path = temp_dir / temp_file_name
+            with temp_file_path.open('wb+') as destination:
                 for chunk in pbo_file.chunks():
                     destination.write(chunk)
+            temp_file_path = str(temp_file_path)
         elif request.POST.get('temp_file_path'):
             temp_file_path = request.POST['temp_file_path']
             temp_file_name = request.POST.get('temp_file_name')
             filename = temp_file_name.split('_', 1)[-1] if temp_file_name and '_' in temp_file_name else temp_file_name
         # Cas confirmation : on récupère le chemin du fichier temporaire
         if request.POST.get('confirm_publish') and temp_file_path:
-            if not os.path.exists(temp_file_path):
+            if not Path(temp_file_path).exists():
                 error_message = "Le fichier temporaire n'existe plus. Merci de recommencer l'upload."
             else:
                 original_filename = temp_file_name.split('_', 1)[-1] if '_' in temp_file_name else temp_file_name
@@ -131,7 +142,7 @@ def upload_mission(request):
                         return redirect(reverse('mission_detail', args=[mission.id]) + '?success=1')
         # Confirmation de mise à jour : NE PAS exiger request.FILES['pbo_file'] si fichier temporaire
         elif request.POST.get('confirm_update'):
-            if 'temp_file_name' in request.POST and 'temp_file_path' in request.POST and os.path.exists(request.POST['temp_file_path']):
+            if 'temp_file_name' in request.POST and 'temp_file_path' in request.POST and Path(request.POST['temp_file_path']).exists():
                 temp_file_name = request.POST['temp_file_name']
                 temp_file_path = request.POST['temp_file_path']
                 file_name_to_parse = temp_file_name.split('_', 1)[-1] if '_' in temp_file_name else temp_file_name
@@ -183,10 +194,11 @@ def upload_mission(request):
                         new_version = version.lstrip('Vv')
                     if str(new_version) > str(existing_version):
                         temp_file_name = f"{uuid.uuid4()}_{filename}"
-                        temp_file_path = os.path.join(temp_dir, temp_file_name)
-                        with open(temp_file_path, 'wb+') as destination:
+                        temp_file_path = temp_dir / temp_file_name
+                        with temp_file_path.open('wb+') as destination:
                             for chunk in pbo_file.chunks():
                                 destination.write(chunk)
+                        temp_file_path = str(temp_file_path)
                         show_update_confirm = True
                         try:
                             map_obj = MapName.objects.get(code_name=map_name)
@@ -225,10 +237,11 @@ def upload_mission(request):
                                 'owner': m.user.username if m.user else '—'
                             })
                         temp_file_name = f"{uuid.uuid4()}_{filename}"
-                        temp_file_path = os.path.join(temp_dir, temp_file_name)
-                        with open(temp_file_path, 'wb+') as destination:
+                        temp_file_path = temp_dir / temp_file_name
+                        with temp_file_path.open('wb+') as destination:
                             for chunk in pbo_file.chunks():
                                 destination.write(chunk)
+                        temp_file_path = str(temp_file_path)
         else:
             error_message = "Aucun fichier .pbo n'a été fourni. Merci de sélectionner un fichier avant de publier."
         if not error_message and not show_confirm and not show_update_confirm:
@@ -511,7 +524,7 @@ def user_profile(request, user_id):
 def create_mission_from_pbo(request, temp_file_path, filename, mission_name, mission_type, max_players, version, map_name, error_message=None):
     errors = []
     try:
-        pbo = PBOFile.read_file(temp_file_path)
+        pbo = PBOFile.read_file(str(temp_file_path))
     except Exception as e:
         errors.append(f"Erreur lors de la lecture du fichier .pbo : {e}")
         return None, format_errors(errors)
@@ -544,12 +557,12 @@ def create_mission_from_pbo(request, temp_file_path, filename, mission_name, mis
     loadscreen_file = None
     if data['loadScreen']:
         try:
-            ext = os.path.splitext(data['loadScreen'])[1].lower()
+            ext = Path(data['loadScreen']).suffix.lower()
             if ext in ['.jpg', '.jpeg', '.png']:
                 img_entry = pbo[data['loadScreen']]
                 img_data = img_entry.data
-                img_filename = os.path.join(settings.MISSIONS_IMAGES_STORAGE_PATH, f"{uuid.uuid4()}{ext}")
-                os.makedirs(os.path.join(default_storage.location, settings.MISSIONS_IMAGES_STORAGE_PATH), exist_ok=True)
+                img_filename = (Path(settings.MISSIONS_IMAGES_STORAGE_PATH) / f"{uuid.uuid4()}{ext}").as_posix()
+                (Path(default_storage.location) / settings.MISSIONS_IMAGES_STORAGE_PATH).mkdir(parents=True, exist_ok=True)
                 with default_storage.open(img_filename, 'wb') as imgfile:
                     imgfile.write(img_data)
                 loadscreen_file = img_filename
@@ -577,7 +590,7 @@ def create_mission_from_pbo(request, temp_file_path, filename, mission_name, mis
         mission.briefing_images = briefing_images
         mission.save(update_fields=['briefing_images'])
     try:
-        os.rename(temp_file_path, os.path.join(settings.MISSIONS_PBO_STORAGE_PATH, filename))
+        save_pbo_to_storage(temp_file_path, filename)
     except Exception as e:
         return mission, f"Mission créée, mais erreur lors de la sauvegarde du PBO: {e}"
     return mission, None
@@ -592,10 +605,10 @@ def update_mission_from_pbo(request, existing_mission, temp_file_path, filename,
     is_owner = existing_mission.user == request.user
     if not (is_admin or is_owner):
         return None, "Vous n'avez pas le droit de mettre à jour cette mission (seul le propriétaire ou un admin peut le faire)."
-    if not os.path.exists(temp_file_path):
+    if not Path(temp_file_path).exists():
         return None, "Fichier temporaire manquant ou expiré lors de la confirmation de mise à jour. Merci de recommencer l'upload."
     try:
-        pbo = PBOFile.read_file(temp_file_path)
+        pbo = PBOFile.read_file(str(temp_file_path))
     except Exception as e:
         return None, f"Erreur lors de la lecture du fichier .pbo : {e}"
     is_binarized = is_sqm_binarized(pbo)
@@ -645,12 +658,12 @@ def update_mission_from_pbo(request, existing_mission, temp_file_path, filename,
     loadscreen_file = None
     if data['loadScreen']:
         try:
-            ext = os.path.splitext(data['loadScreen'])[1].lower()
+            ext = Path(data['loadScreen']).suffix.lower()
             if ext in ['.jpg', '.jpeg', '.png']:
                 img_entry = pbo[data['loadScreen']]
                 img_data = img_entry.data
-                img_filename = os.path.join(settings.MISSIONS_IMAGES_STORAGE_PATH, f"{uuid.uuid4()}{ext}")
-                os.makedirs(os.path.join(default_storage.location, settings.MISSIONS_IMAGES_STORAGE_PATH), exist_ok=True)
+                img_filename = (Path(settings.MISSIONS_IMAGES_STORAGE_PATH) / f"{uuid.uuid4()}{ext}").as_posix()
+                (Path(default_storage.location) / settings.MISSIONS_IMAGES_STORAGE_PATH).mkdir(parents=True, exist_ok=True)
                 with default_storage.open(img_filename, 'wb') as imgfile:
                     imgfile.write(img_data)
                 loadscreen_file = img_filename
@@ -662,7 +675,7 @@ def update_mission_from_pbo(request, existing_mission, temp_file_path, filename,
     existing_mission.loadScreen = loadscreen_file
     existing_mission.save()
     try:
-        os.rename(temp_file_path, os.path.join(settings.MISSIONS_PBO_STORAGE_PATH, filename))
+        save_pbo_to_storage(temp_file_path, filename)
     except Exception as e:
         return existing_mission, f"Mission mise à jour, mais erreur lors de la sauvegarde du PBO: {e}"
     return existing_mission, None
