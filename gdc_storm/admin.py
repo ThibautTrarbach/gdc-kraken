@@ -6,7 +6,13 @@ from django.contrib.auth.admin import UserAdmin as BaseUserAdmin
 from django import forms
 import secrets
 
-admin.site.register(Mission)
+@admin.register(Mission)
+class MissionAdmin(admin.ModelAdmin):
+    list_display = ('name', 'version', 'map', 'status', 'pbo_missing', 'user')
+    list_filter = ('status', 'pbo_missing', 'type')
+    search_fields = ('name', 'authors', 'map')
+
+
 admin.site.register(Player)
 admin.site.register(GameSession)
 admin.site.register(GameSessionPlayer)

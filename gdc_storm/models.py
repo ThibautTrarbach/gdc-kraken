@@ -57,6 +57,10 @@ class Mission(models.Model):
         verbose_name='Statut de la mission'
     )
     last_status_update = models.DateTimeField(null=True, blank=True, verbose_name='Dernier changement de statut')
+    pbo_missing = models.BooleanField(
+        default=False,
+        verbose_name='PBO manquant sur le serveur',
+    )
 
     def __str__(self):
         return self.name

@@ -17,6 +17,7 @@
         {% if user.is_authenticated %}
             {% if user.is_superuser %}
                 <a href="/upload/"><button class="home-btn" style="background: #FFD600; color: #111;">Publier une mission</button></a>
+                <a href="/recup/scan-pbo/"><button class="home-btn" style="background: #1976d2; color: #fff; margin-left: 12px;">Scan PBO manquants</button></a>
             {% else %}
                 {% for group in user.groups.all %}
                     {% if group.name == 'Mission Maker' %}
