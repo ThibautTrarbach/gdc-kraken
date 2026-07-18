@@ -22,15 +22,23 @@ if not os.path.exists(config_file_path):
 with open(config_file_path, 'r') as file:
     config_data = json.load(file)
 
+wsgi_config = config_data.get("WSGI") or {}
+
 if config_data["PLATFORM"] == "PROD":
-    # Add python site packages, you can use virtualenvs also
-    site.addsitedir(config_data["WSGI"]["PATH_SITE_PACKAGES"])
+    # Add python site packages (legacy Apache/virtualenv hosting)
+    site_packages = wsgi_config.get("PATH_SITE_PACKAGES")
+    if site_packages:
+        site.addsitedir(site_packages)
 
-# Add the app's directory to the PYTHONPATH
-sys.path.append(config_data["WSGI"]["PATH_GDC_KRAKEN"]) 
-sys.path.append(config_data["WSGI"]["PATH_GDC_STORM"]) 
+# Add the app's directory to the PYTHONPATH when provided (legacy hosting)
+path_kraken = wsgi_config.get("PATH_GDC_KRAKEN")
+path_storm = wsgi_config.get("PATH_GDC_STORM")
+if path_kraken:
+    sys.path.append(path_kraken)
+if path_storm:
+    sys.path.append(path_storm)
 
-os.environ['DJANGO_SETTINGS_MODULE'] = 'gdc_kraken.settings' 
+os.environ['DJANGO_SETTINGS_MODULE'] = 'gdc_kraken.settings'
 os.environ.setdefault('DJANGO_SETTINGS_MODULE', 'gdc_kraken.settings')
 
 application = get_wsgi_application()

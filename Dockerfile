@@ -1,0 +1,24 @@
+FROM python:3.12-slim
+
+RUN groupadd -g 987 pterodactyl \
+    && useradd -u 999 -g 987 -m pterodactyl \
+    && apt-get update \
+    && apt-get install -y --no-install-recommends gosu \
+    && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /app
+
+COPY requirements.txt .
+RUN pip install --no-cache-dir -r requirements.txt
+
+COPY . .
+
+RUN mkdir -p /app/missions /app/staticfiles /data/missions_pbo /data/persist \
+    && sed -i 's/\r$//' /app/docker/entrypoint.sh \
+    && chmod +x /app/docker/entrypoint.sh \
+    && chown -R 999:987 /app /data
+
+# Start as root so entrypoint can chown named volumes, then drop to 999:987
+EXPOSE 8000
+
+ENTRYPOINT ["/app/docker/entrypoint.sh"]

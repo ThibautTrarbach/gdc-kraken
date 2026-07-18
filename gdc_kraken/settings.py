@@ -22,21 +22,31 @@ BASE_DIR = Path(__file__).resolve().parent.parent
 # See https://docs.djangoproject.com/en/5.2/howto/deployment/checklist/
 
 # SECURITY WARNING: keep the secret key used in production secret!
-config_file_path = os.path.join(Path(__file__).resolve().parent.parent, "config.json")
-if not os.path.exists(config_file_path):
+config_file_path = BASE_DIR / "config.json"
+if not config_file_path.exists():
     raise Exception(f"Missing config.json ({config_file_path})")
-with open(config_file_path, 'r') as file:
+with config_file_path.open('r', encoding='utf-8') as file:
     config_data = json.load(file)
 
 SECRET_KEY = config_data["SECRET_KEY"]
 
 # SECURITY WARNING: don't run with debug turned on in production!
-if config_data["PLATFORM"] == "PROD":
+if config_data["PLATFORM"] in ("PROD", "DOCKER"):
     DEBUG = False
 else:
     DEBUG = True
 
-ALLOWED_HOSTS = ["localhost", "grecedecanards.fr"]
+ALLOWED_HOSTS = [
+    host.strip()
+    for host in os.environ.get("ALLOWED_HOSTS", "localhost,grecedecanards.fr").split(",")
+    if host.strip()
+]
+
+CSRF_TRUSTED_ORIGINS = [
+    origin.strip()
+    for origin in os.environ.get("CSRF_TRUSTED_ORIGINS", "").split(",")
+    if origin.strip()
+]
 
 
 # Application definition
@@ -53,6 +63,7 @@ INSTALLED_APPS = [
 
 MIDDLEWARE = [
     'django.middleware.security.SecurityMiddleware',
+    'whitenoise.middleware.WhiteNoiseMiddleware',
     'django.contrib.sessions.middleware.SessionMiddleware',
     'django.middleware.common.CommonMiddleware',
     'django.middleware.csrf.CsrfViewMiddleware',
@@ -66,7 +77,7 @@ ROOT_URLCONF = 'gdc_kraken.urls'
 TEMPLATES = [
     {
         'BACKEND': 'django.template.backends.django.DjangoTemplates',
-        'DIRS': [os.path.join(BASE_DIR, 'gdc_storm', 'templates')],
+        'DIRS': [BASE_DIR / 'gdc_storm' / 'templates'],
         'APP_DIRS': True,
         'OPTIONS': {
             'context_processors': [
@@ -87,7 +98,7 @@ WSGI_APPLICATION = 'gdc_kraken.wsgi.application'
 DATABASES = {
     'default': {
         'ENGINE': 'django.db.backends.sqlite3',
-        'NAME': BASE_DIR / 'db.sqlite3',
+        'NAME': os.environ.get('SQLITE_PATH', str(BASE_DIR / 'db.sqlite3')),
     }
 }
 
@@ -126,11 +137,19 @@ USE_TZ = True
 # Static files (CSS, JavaScript, Images)
 # https://docs.djangoproject.com/en/5.2/howto/static-files/
 
-STATIC_URL = 'static/'
+STATIC_URL = '/static/'
 STATICFILES_DIRS = [
     BASE_DIR / 'gdc_storm' / 'static',
 ]
 STATIC_ROOT = BASE_DIR / 'staticfiles'
+STORAGES = {
+    'default': {
+        'BACKEND': 'django.core.files.storage.FileSystemStorage',
+    },
+    'staticfiles': {
+        'BACKEND': 'whitenoise.storage.CompressedStaticFilesStorage',
+    },
+}
 
 
 # Default primary key field type
@@ -143,13 +162,16 @@ LOGOUT_REDIRECT_URL = '/'
 
 # Chemins personnalisés pour les fichiers missions et images de mission
 MISSIONS_STORAGE_PATH = os.environ.get('MISSIONS_STORAGE_PATH', 'missions')
-MISSIONS_IMAGES_STORAGE_PATH = os.environ.get('MISSIONS_IMAGES_STORAGE_PATH', os.path.join('missions', 'images'))
+MISSIONS_IMAGES_STORAGE_PATH = os.environ.get(
+    'MISSIONS_IMAGES_STORAGE_PATH',
+    (Path('missions') / 'images').as_posix(),
+)
 
-# Chemin personnalisé pour le stockage des missions
-MISSIONS_PBO_STORAGE_PATH = config_data["MISSIONS_PBO_STORAGE_PATH"]
+# Chemin personnalisé pour le stockage des missions (Path → str pour Django / Windows)
+MISSIONS_PBO_STORAGE_PATH = str(Path(config_data["MISSIONS_PBO_STORAGE_PATH"]))
 
 # Fichiers médias (missions, loadScreen)
-MEDIA_ROOT = BASE_DIR / 'missions'
+MEDIA_ROOT = Path(os.environ.get("MEDIA_ROOT", BASE_DIR / "missions"))
 MEDIA_URL = '/media/'
 
 # For legacy cleaning purposes
