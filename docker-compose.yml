@@ -1,0 +1,20 @@
+services:
+  web:
+    build: .
+    ports:
+      - "${HOST_PORT:-6130}:8000"
+    env_file: .env
+    environment:
+      # Surcharge possible via .env ; valeurs Docker par défaut ici
+      SQLITE_PATH: ${SQLITE_PATH:-/data/persist/db.sqlite3}
+      MEDIA_ROOT: ${MEDIA_ROOT:-/data/persist/missions}
+      PLATFORM: ${PLATFORM:-DOCKER}
+      PUID: ${PUID:-1000}
+      PGID: ${PGID:-1000}
+    volumes:
+      - app_data:/data/persist
+      - ${MISSIONS_PBO_HOST_PATH}:/data/missions_pbo
+    restart: unless-stopped
+
+volumes:
+  app_data:

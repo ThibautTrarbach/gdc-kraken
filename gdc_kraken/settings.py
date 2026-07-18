@@ -22,21 +22,57 @@ BASE_DIR = Path(__file__).resolve().parent.parent
 # See https://docs.djangoproject.com/en/5.2/howto/deployment/checklist/
 
 # SECURITY WARNING: keep the secret key used in production secret!
-config_file_path = os.path.join(Path(__file__).resolve().parent.parent, "config.json")
-if not os.path.exists(config_file_path):
+config_file_path = BASE_DIR / "config.json"
+if not config_file_path.exists():
     raise Exception(f"Missing config.json ({config_file_path})")
-with open(config_file_path, 'r') as file:
+with config_file_path.open('r', encoding='utf-8') as file:
     config_data = json.load(file)
 
-SECRET_KEY = config_data["SECRET_KEY"]
+def _env(name, default=None):
+    """Lit une variable d'environnement, sinon la valeur config.json, sinon default."""
+    if name in os.environ:
+        return os.environ[name]
+    if name in config_data:
+        return config_data[name]
+    return default
+
+def _env_bool(name, default=False):
+    raw = _env(name)
+    if raw is None:
+        return default
+    if isinstance(raw, bool):
+        return raw
+    return str(raw).strip().lower() in ("1", "true", "yes", "on")
+
+SECRET_KEY = _env("SECRET_KEY")
+if not SECRET_KEY:
+    raise Exception("SECRET_KEY is required (env or config.json)")
+
+PLATFORM = _env("PLATFORM", "DEV")
 
 # SECURITY WARNING: don't run with debug turned on in production!
-if config_data["PLATFORM"] == "PROD":
-    DEBUG = False
+# DEBUG env override ; sinon False pour PROD/DOCKER.
+if "DEBUG" in os.environ:
+    DEBUG = _env_bool("DEBUG")
 else:
-    DEBUG = True
+    DEBUG = PLATFORM not in ("PROD", "DOCKER")
 
-ALLOWED_HOSTS = ["localhost", "grecedecanards.fr", "127.0.0.1"]
+ALLOWED_HOSTS = [
+    host.strip()
+    for host in os.environ.get("ALLOWED_HOSTS", "localhost,grecedecanards.fr").split(",")
+    if host.strip()
+]
+
+CSRF_TRUSTED_ORIGINS = [
+    origin.strip()
+    for origin in os.environ.get("CSRF_TRUSTED_ORIGINS", "").split(",")
+    if origin.strip()
+]
+
+# Derrière un reverse-proxy (Traefik, nginx, Cloudflare…)
+USE_X_FORWARDED_HOST = _env_bool("USE_X_FORWARDED_HOST", False)
+if _env_bool("USE_X_FORWARDED_PROTO", False):
+    SECURE_PROXY_SSL_HEADER = ("HTTP_X_FORWARDED_PROTO", "https")
 
 
 # Application definition
@@ -53,6 +89,7 @@ INSTALLED_APPS = [
 
 MIDDLEWARE = [
     'django.middleware.security.SecurityMiddleware',
+    'whitenoise.middleware.WhiteNoiseMiddleware',
     'django.contrib.sessions.middleware.SessionMiddleware',
     'django.middleware.common.CommonMiddleware',
     'django.middleware.csrf.CsrfViewMiddleware',
@@ -66,7 +103,7 @@ ROOT_URLCONF = 'gdc_kraken.urls'
 TEMPLATES = [
     {
         'BACKEND': 'django.template.backends.django.DjangoTemplates',
-        'DIRS': [os.path.join(BASE_DIR, 'gdc_storm', 'templates')],
+        'DIRS': [BASE_DIR / 'gdc_storm' / 'templates'],
         'APP_DIRS': True,
         'OPTIONS': {
             'context_processors': [
@@ -87,7 +124,7 @@ WSGI_APPLICATION = 'gdc_kraken.wsgi.application'
 DATABASES = {
     'default': {
         'ENGINE': 'django.db.backends.sqlite3',
-        'NAME': BASE_DIR / 'db.sqlite3',
+        'NAME': os.environ.get('SQLITE_PATH', str(BASE_DIR / 'db.sqlite3')),
     }
 }
 
@@ -114,9 +151,9 @@ AUTH_PASSWORD_VALIDATORS = [
 # Internationalization
 # https://docs.djangoproject.com/en/5.2/topics/i18n/
 
-LANGUAGE_CODE = 'en-us'
+LANGUAGE_CODE = os.environ.get("LANGUAGE_CODE", "en-us")
 
-TIME_ZONE = 'Europe/Paris'
+TIME_ZONE = os.environ.get("TIME_ZONE", "Europe/Paris")
 
 USE_I18N = True
 
@@ -126,11 +163,19 @@ USE_TZ = True
 # Static files (CSS, JavaScript, Images)
 # https://docs.djangoproject.com/en/5.2/howto/static-files/
 
-STATIC_URL = 'static/'
+STATIC_URL = os.environ.get("STATIC_URL", "/static/")
 STATICFILES_DIRS = [
     BASE_DIR / 'gdc_storm' / 'static',
 ]
-STATIC_ROOT = BASE_DIR / 'staticfiles'
+STATIC_ROOT = Path(os.environ.get("STATIC_ROOT", BASE_DIR / "staticfiles"))
+STORAGES = {
+    'default': {
+        'BACKEND': 'django.core.files.storage.FileSystemStorage',
+    },
+    'staticfiles': {
+        'BACKEND': 'whitenoise.storage.CompressedStaticFilesStorage',
+    },
+}
 
 
 # Default primary key field type
@@ -143,14 +188,23 @@ LOGOUT_REDIRECT_URL = '/'
 
 # Chemins personnalisés pour les fichiers missions et images de mission
 MISSIONS_STORAGE_PATH = os.environ.get('MISSIONS_STORAGE_PATH', 'missions')
-MISSIONS_IMAGES_STORAGE_PATH = os.environ.get('MISSIONS_IMAGES_STORAGE_PATH', os.path.join('missions', 'images'))
+MISSIONS_IMAGES_STORAGE_PATH = os.environ.get(
+    'MISSIONS_IMAGES_STORAGE_PATH',
+    (Path('missions') / 'images').as_posix(),
+)
 
-# Chemin personnalisé pour le stockage des missions
-MISSIONS_PBO_STORAGE_PATH = config_data["MISSIONS_PBO_STORAGE_PATH"]
+# Chemin personnalisé pour le stockage des missions (env prioritaire, sinon config.json)
+MISSIONS_PBO_STORAGE_PATH = str(Path(_env(
+    "MISSIONS_PBO_STORAGE_PATH",
+    str(BASE_DIR / "missions_pbo"),
+)))
 
 # Fichiers médias (missions, loadScreen)
-MEDIA_ROOT = BASE_DIR / 'missions'
-MEDIA_URL = '/media/'
+MEDIA_ROOT = Path(os.environ.get("MEDIA_ROOT", BASE_DIR / "missions"))
+MEDIA_URL = os.environ.get("MEDIA_URL", "/media/")
 
-# For legacy cleaning purposes
-DATA_UPLOAD_MAX_NUMBER_FIELDS = 100000
+# For legacy cleaning purposes / gros formulaires
+DATA_UPLOAD_MAX_NUMBER_FIELDS = int(os.environ.get("DATA_UPLOAD_MAX_NUMBER_FIELDS", "100000"))
+# Limite mémoire avant spill disque pour les uploads (PBO volumineux)
+FILE_UPLOAD_MAX_MEMORY_SIZE = int(os.environ.get("FILE_UPLOAD_MAX_MEMORY_SIZE", str(10 * 1024 * 1024)))
+DATA_UPLOAD_MAX_MEMORY_SIZE = int(os.environ.get("DATA_UPLOAD_MAX_MEMORY_SIZE", str(10 * 1024 * 1024)))

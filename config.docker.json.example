@@ -1,0 +1,5 @@
+{
+  "SECRET_KEY": "change-me-long-random",
+  "PLATFORM": "DOCKER",
+  "MISSIONS_PBO_STORAGE_PATH": "/data/missions_pbo"
+}
