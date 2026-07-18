@@ -32,6 +32,7 @@
             </li>
             <li><strong>Date de création :</strong> {% if oldest_player_created %}{{ oldest_player_created|date:'d/m/Y H:i' }}{% else %}—{% endif %}</li>
             <li><strong>Missions jouées :</strong> {{ total_sessions_played }}</li>
+            <li><strong>Ratio vivant/mort :</strong> {{ dead_alive_ratio.alive }}/{{ dead_alive_ratio.dead }} ({{ dead_alive_ratio.ratio }})</li>
             <li><strong>Missions publiées :</strong> {{ total_missions_published }}</li>
         </ul>
     </div>
