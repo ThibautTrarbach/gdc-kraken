@@ -12,7 +12,12 @@
 <div class="missions-container" style="max-width:none;margin:10px 10px 10px 10px;padding:0 0 32px 0;border-radius:18px;background:#fff;box-shadow:0 2px 16px #0002;">
     <!-- Bandeau titre + actions -->
     <div style="display:flex;align-items:center;justify-content:space-between;padding:32px 40px 24px 40px;background:#222;color:#fff;border-radius:18px 18px 0 0;">
-        <div style="font-size:2.1em;font-weight:800;letter-spacing:0.5px;">{{ mission.name }}</div>
+        <div style="font-size:2.1em;font-weight:800;letter-spacing:0.5px;">
+            {{ mission.name }}
+            {% if mission.pbo_missing %}
+            <span style="display:inline-block;margin-left:12px;vertical-align:middle;padding:4px 12px;border-radius:6px;background:#ffeaea;color:#b71c1c;font-weight:700;font-size:0.42em;letter-spacing:0;">PBO manquant</span>
+            {% endif %}
+        </div>
         <div style="display:flex;gap:16px;align-items:center;position:relative;">
             {% if user.is_authenticated %}
                 {% if user.is_superuser or mission.user == user %}
@@ -87,6 +92,9 @@
                     {% endif %}
                     {{ mission.get_status_display|default:'—' }}
                     {% if mission.last_status_update %}<span style="color:#888;font-size:0.95em;margin-left:12px;">(modifié le {{ mission.last_status_update|date:'d/m/Y H:i' }})</span>{% endif %}
+                    {% if mission.pbo_missing %}
+                    <div style="margin-top:8px;"><span style="display:inline-block;padding:3px 10px;border-radius:6px;background:#ffeaea;color:#b71c1c;font-weight:700;font-size:0.9em;">PBO manquant sur le serveur</span></div>
+                    {% endif %}
                 </td></tr>
             </table>
         </div>

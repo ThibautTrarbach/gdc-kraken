@@ -160,22 +160,17 @@ def backup_existing_pbo(existing_mission):
     version = str(existing_mission.version).lstrip('Vv')
     name = existing_mission.name
     map_name = (existing_mission.map or '').lower()
-    candidates = [
-        f"{name}-V{version}.{map_name}.pbo",
-        f"{name}-v{version}.{map_name}.pbo",
-    ]
-    old_path = None
-    for candidate in candidates:
-        path = os.path.join(storage_root, candidate)
-        if os.path.isfile(path):
-            old_path = path
-            break
-    if not old_path:
+    actual_name = resolve_pbo_on_disk(
+        mission_pbo_candidate_names(existing_mission),
+        storage_root=storage_root,
+    )
+    if not actual_name:
         logging.warning(
             "Aucun PBO à archiver pour %s V%s (%s) dans %s",
             name, version, map_name, storage_root,
         )
         return None
+    old_path = os.path.join(storage_root, actual_name)
 
     backup_dir = os.path.join(storage_root, 'backup')
     try:
@@ -206,27 +201,246 @@ def _compare_versions(existing_version, new_version_raw):
         return existing_s, new_stripped, new_stripped > existing_s
 
 
-def mission_pbo_on_disk(mission):
-    """True si un fichier .pbo correspondant à la mission est présent en stockage."""
-    storage_root = settings.MISSIONS_PBO_STORAGE_PATH
+def build_pbo_filename_index(storage_root=None):
+    """
+    Index des .pbo à la racine du stockage : basename.lower() → basename réel.
+    Nécessaire sous Linux (FS sensible à la casse) : DB en altis, fichier Altis.pbo.
+    Ignore les fichiers Mare_aux_canards (templates / hors inventaire).
+    """
+    root = storage_root if storage_root is not None else settings.MISSIONS_PBO_STORAGE_PATH
+    index = {}
+    if not root or not os.path.isdir(root):
+        return index
+    try:
+        for filename in os.listdir(root):
+            if not filename.lower().endswith('.pbo'):
+                continue
+            if 'mare_aux_canards' in filename.lower():
+                continue
+            full = os.path.join(root, filename)
+            if os.path.isfile(full):
+                index[filename.lower()] = filename
+    except OSError as e:
+        logging.warning("Impossible de lister les PBO dans %s : %s", root, e)
+    return index
+
+
+def mission_pbo_candidate_names(mission):
+    """Noms de fichiers candidats (map en minuscules, V/v) pour une mission."""
     version = str(mission.version).lstrip('Vv')
     name = mission.name
     map_name = (mission.map or '').lower()
-    for candidate in (
+    return (
         f"{name}-V{version}.{map_name}.pbo",
         f"{name}-v{version}.{map_name}.pbo",
-    ):
-        if os.path.isfile(os.path.join(storage_root, candidate)):
-            return True
-    return False
+    )
 
 
-def pbo_filename_on_disk(filename):
-    """True si ce nom de fichier .pbo exact est déjà présent en stockage."""
+def resolve_pbo_on_disk(candidates, pbo_index=None, storage_root=None):
+    """
+    Retourne le nom de fichier réel sur disque, ou None.
+    Comparaison insensible à la casse via l'index.
+    """
+    if pbo_index is None:
+        pbo_index = build_pbo_filename_index(storage_root)
+    for candidate in candidates:
+        actual = pbo_index.get(candidate.lower())
+        if actual:
+            return actual
+    return None
+
+
+def mission_pbo_on_disk(mission, pbo_index=None):
+    """True si un fichier .pbo correspondant à la mission est présent en stockage."""
+    return resolve_pbo_on_disk(
+        mission_pbo_candidate_names(mission),
+        pbo_index=pbo_index,
+    ) is not None
+
+
+def pbo_filename_on_disk(filename, pbo_index=None):
+    """True si ce nom de fichier .pbo est déjà présent en stockage (casse ignorée)."""
     if not filename:
         return False
-    path = os.path.join(settings.MISSIONS_PBO_STORAGE_PATH, os.path.basename(filename))
-    return os.path.isfile(path)
+    basename = os.path.basename(filename)
+    if pbo_index is None:
+        pbo_index = build_pbo_filename_index()
+    return basename.lower() in pbo_index
+
+
+def scan_missions_pbo_presence():
+    """
+    Parcourt toutes les missions, met à jour Mission.pbo_missing selon le disque.
+    Ne modifie pas le statut jouable. Utilise update() pour éviter last_status_update.
+    Étape 2 : parmi les manquants, propose une MAJ si un PBO plus récent existe sur disque.
+    """
+    pbo_index = build_pbo_filename_index()
+    total = 0
+    missing_count = 0
+    ok_count = 0
+    updated_count = 0
+    missing_missions = []
+
+    for mission in Mission.objects.all().iterator():
+        total += 1
+        missing = not mission_pbo_on_disk(mission, pbo_index=pbo_index)
+        if missing != mission.pbo_missing:
+            Mission.objects.filter(pk=mission.pk).update(pbo_missing=missing)
+            updated_count += 1
+            mission.pbo_missing = missing
+        if missing:
+            missing_count += 1
+            missing_missions.append({
+                'id': mission.id,
+                'name': mission.name,
+                'version': mission.version,
+                'map': mission.map,
+                'status': mission.status,
+                'status_display': mission.get_status_display(),
+            })
+        else:
+            ok_count += 1
+
+    upgrade_proposals = find_newer_pbo_matches(
+        [m for m in Mission.objects.filter(pbo_missing=True)],
+        pbo_index=pbo_index,
+    )
+    upgrade_ids = {p['mission_id'] for p in upgrade_proposals}
+    upgrade_filenames = {p['filename'].lower() for p in upgrade_proposals}
+    still_missing = [m for m in missing_missions if m['id'] not in upgrade_ids]
+    orphan_pbos = find_orphan_pbo_files(pbo_index=pbo_index, exclude_filenames=upgrade_filenames)
+
+    return {
+        'total': total,
+        'missing_count': missing_count,
+        'ok_count': ok_count,
+        'updated_count': updated_count,
+        'missing_missions': still_missing,
+        'upgrade_proposals': upgrade_proposals,
+        'upgrade_count': len(upgrade_proposals),
+        'orphan_pbos': orphan_pbos,
+        'orphan_count': len(orphan_pbos),
+        'files_indexed': len(pbo_index),
+        'storage_path': settings.MISSIONS_PBO_STORAGE_PATH,
+    }
+
+
+def find_orphan_pbo_files(pbo_index=None, exclude_filenames=None):
+    """
+    PBO présents sur disque sans mission exacte (même nom + carte + version).
+    exclude_filenames : noms déjà listés en proposition de MAJ (évite le doublon).
+    """
+    if pbo_index is None:
+        pbo_index = build_pbo_filename_index()
+    exclude = {f.lower() for f in (exclude_filenames or [])}
+
+    linked = set()
+    name_map_missions = {}
+    for mission in Mission.objects.all().only('id', 'name', 'map', 'version').iterator():
+        map_l = (mission.map or '').lower()
+        ver = str(mission.version).lstrip('Vv')
+        linked.add((mission.name, map_l, ver))
+        name_map_missions.setdefault((mission.name, map_l), []).append(mission)
+
+    orphans = []
+    for _filename_lower, filename in pbo_index.items():
+        if filename.lower() in exclude:
+            continue
+        parsed = parse_mission_filename(filename)
+        if not parsed:
+            orphans.append({
+                'filename': filename,
+                'name': None,
+                'version': None,
+                'map': None,
+                'parse_ok': False,
+                'related_mission_id': None,
+                'related_version': None,
+            })
+            continue
+        mission_name, _mission_type, _max_players, version, map_name = parsed
+        map_l = (map_name or '').lower()
+        ver = str(version).lstrip('Vv')
+        if (mission_name, map_l, ver) in linked:
+            continue
+        related_list = name_map_missions.get((mission_name, map_l)) or []
+        related = related_list[0] if related_list else None
+        orphans.append({
+            'filename': filename,
+            'name': mission_name,
+            'version': ver,
+            'map': map_l,
+            'parse_ok': True,
+            'related_mission_id': related.id if related else None,
+            'related_version': str(related.version).lstrip('Vv') if related else None,
+        })
+
+    return sorted(orphans, key=lambda o: (o['filename'] or '').lower())
+
+
+def find_newer_pbo_matches(missions=None, pbo_index=None):
+    """
+    Pour des missions sans PBO exact, cherche dans le stockage un .pbo même nom+map
+    avec une version strictement supérieure. Garde la meilleure version par mission.
+    """
+    if missions is None:
+        missions = list(Mission.objects.filter(pbo_missing=True))
+    else:
+        missions = list(missions)
+
+    by_key = {}
+    for mission in missions:
+        key = (mission.name, (mission.map or '').lower())
+        by_key.setdefault(key, []).append(mission)
+
+    if pbo_index is None:
+        pbo_index = build_pbo_filename_index()
+    if not pbo_index:
+        return []
+
+    proposals = {}
+    for filename_lower, filename in pbo_index.items():
+        parsed = parse_mission_filename(filename)
+        if not parsed:
+            continue
+        mission_name, mission_type, max_players, version, map_name = parsed
+        key = (mission_name, (map_name or '').lower())
+        candidates = by_key.get(key) or []
+        for mission in candidates:
+            old_v, new_v, is_newer = _compare_versions(mission.version, version)
+            if not is_newer:
+                continue
+            prev = proposals.get(mission.id)
+            if prev is not None:
+                _, _, better_than_prev = _compare_versions(prev['new_version'], version)
+                if not better_than_prev:
+                    continue
+            version_raw = version if str(version).upper().startswith('V') else f'V{new_v}'
+            proposals[mission.id] = {
+                'mission_id': mission.id,
+                'name': mission.name,
+                'map': mission.map,
+                'status': mission.status,
+                'status_display': mission.get_status_display(),
+                'old_version': old_v,
+                'new_version': new_v,
+                'filename': filename,
+                'mission_type': mission_type,
+                'max_players': str(max_players),
+                'version_raw': version_raw,
+            }
+
+    return sorted(proposals.values(), key=lambda p: (p['name'], p['map']))
+
+
+def clear_mission_pbo_missing(mission):
+    """Remet pbo_missing=False après écriture réussie du PBO sur disque."""
+    if mission is None:
+        return
+    if mission.pbo_missing:
+        Mission.objects.filter(pk=mission.pk).update(pbo_missing=False)
+        mission.pbo_missing = False
+
 
 
 def analyze_pbo_upload(filename, user=None, *, allow_pbo_restore=False):
@@ -593,6 +807,124 @@ def recup_missions(request):
     clean_temp_files(get_upload_temp_dir())
     return render(request, 'gdc_storm/recup_missions.html', {
         'max_files': UPLOAD_ANALYZE_MAX_FILES,
+    })
+
+
+def _require_superuser(request):
+    if not request.user.is_superuser:
+        return HttpResponse("Accès réservé aux administrateurs.", status=403)
+    return None
+
+
+@login_required
+def scan_pbo_missing(request):
+    """Page admin : liste des missions marquées pbo_missing + bouton pour lancer un scan."""
+    forbidden = _require_superuser(request)
+    if forbidden:
+        return forbidden
+    pbo_index = build_pbo_filename_index()
+    missing_qs = Mission.objects.filter(pbo_missing=True).order_by('name', 'version')
+    upgrade_proposals = find_newer_pbo_matches(missing_qs, pbo_index=pbo_index)
+    upgrade_ids = {p['mission_id'] for p in upgrade_proposals}
+    upgrade_filenames = {p['filename'].lower() for p in upgrade_proposals}
+    missing_missions = [m for m in missing_qs if m.id not in upgrade_ids]
+    orphan_pbos = find_orphan_pbo_files(pbo_index=pbo_index, exclude_filenames=upgrade_filenames)
+    return render(request, 'gdc_storm/scan_pbo_missing.html', {
+        'missing_missions': missing_missions,
+        'missing_count': len(missing_missions),
+        'upgrade_proposals': upgrade_proposals,
+        'upgrade_count': len(upgrade_proposals),
+        'orphan_pbos': orphan_pbos,
+        'orphan_count': len(orphan_pbos),
+        'files_indexed': len(pbo_index),
+    })
+
+
+@login_required
+@require_POST
+def scan_pbo_missing_run(request):
+    """Lance le scan PBO pour toutes les missions et retourne un résumé JSON."""
+    forbidden = _require_superuser(request)
+    if forbidden:
+        return JsonResponse({'success': False, 'error': 'Accès réservé aux administrateurs.'}, status=403)
+    summary = scan_missions_pbo_presence()
+    return JsonResponse({'success': True, **summary})
+
+
+@login_required
+@require_POST
+def scan_pbo_missing_apply(request):
+    """Applique une mise à jour de mission depuis un PBO déjà présent en stockage (version plus récente)."""
+    forbidden = _require_superuser(request)
+    if forbidden:
+        return JsonResponse({'success': False, 'error': 'Accès réservé aux administrateurs.'}, status=403)
+
+    try:
+        payload = json.loads(request.body.decode('utf-8') or '{}')
+    except (TypeError, ValueError, UnicodeDecodeError):
+        payload = {}
+    mission_id = payload.get('mission_id') or request.POST.get('mission_id')
+    filename = payload.get('filename') or request.POST.get('filename')
+    if not mission_id or not filename:
+        return JsonResponse({'success': False, 'error': 'Paramètres mission_id et filename requis.'}, status=400)
+
+    filename = os.path.basename(str(filename))
+    try:
+        mission = Mission.objects.get(pk=int(mission_id))
+    except (Mission.DoesNotExist, TypeError, ValueError):
+        return JsonResponse({'success': False, 'error': 'Mission introuvable.'}, status=404)
+
+    pbo_index = build_pbo_filename_index()
+    actual_filename = pbo_index.get(filename.lower())
+    if not actual_filename:
+        return JsonResponse({'success': False, 'error': 'Fichier PBO introuvable sur le serveur.'}, status=404)
+    filename = actual_filename
+
+    parsed = parse_mission_filename(filename)
+    if not parsed:
+        return JsonResponse({'success': False, 'error': 'Nom de fichier PBO invalide.'}, status=400)
+    mission_name, mission_type, max_players, version, map_name = parsed
+    if mission_name != mission.name or (map_name or '').lower() != (mission.map or '').lower():
+        return JsonResponse(
+            {'success': False, 'error': 'Le fichier PBO ne correspond pas à cette mission (nom/carte).'},
+            status=400,
+        )
+    _, new_v, is_newer = _compare_versions(mission.version, version)
+    if not is_newer:
+        return JsonResponse(
+            {'success': False, 'error': 'Le fichier n\'a pas une version plus récente que la mission.'},
+            status=400,
+        )
+
+    pbo_path = os.path.join(settings.MISSIONS_PBO_STORAGE_PATH, filename)
+    if not os.path.isfile(pbo_path):
+        return JsonResponse({'success': False, 'error': 'Fichier PBO introuvable sur le serveur.'}, status=404)
+
+    version_raw = version if str(version).upper().startswith('V') else f'V{new_v}'
+    updated, error_message = update_mission_from_pbo(
+        request,
+        mission,
+        pbo_path,
+        filename,
+        mission_type,
+        max_players,
+        version_raw,
+        map_name,
+        strict=False,
+        preserve_owner=True,
+        skip_pbo_storage=True,
+    )
+    if updated is None:
+        return JsonResponse({'success': False, 'error': error_message or 'Échec de la mise à jour.'}, status=400)
+
+    clear_mission_pbo_missing(updated)
+    return JsonResponse({
+        'success': True,
+        'mission_id': updated.id,
+        'name': updated.name,
+        'version': updated.version,
+        'map': updated.map,
+        'warning': error_message,
     })
 
 
@@ -1219,6 +1551,7 @@ def create_mission_from_pbo(
         save_pbo_to_storage(temp_file_path, filename)
     except Exception as e:
         return mission, f"Mission créée, mais erreur lors de la sauvegarde du PBO: {e}"
+    clear_mission_pbo_missing(mission)
     warning_msg = format_errors(warnings)
     return mission, warning_msg
 
@@ -1241,6 +1574,7 @@ def update_mission_from_pbo(
     *,
     strict=True,
     preserve_owner=False,
+    skip_pbo_storage=False,
 ):
     is_admin = request.user.is_superuser
     is_owner = existing_mission.user == request.user
@@ -1336,10 +1670,12 @@ def update_mission_from_pbo(
             loadscreen_file = None
     existing_mission.loadScreen = loadscreen_file
     existing_mission.save(skip_name_check=not strict)
-    try:
-        save_pbo_to_storage(temp_file_path, filename)
-    except Exception as e:
-        return existing_mission, f"Mission mise à jour, mais erreur lors de la sauvegarde du PBO: {e}"
+    if not skip_pbo_storage:
+        try:
+            save_pbo_to_storage(temp_file_path, filename)
+        except Exception as e:
+            return existing_mission, f"Mission mise à jour, mais erreur lors de la sauvegarde du PBO: {e}"
+    clear_mission_pbo_missing(existing_mission)
     warning_msg = format_errors(warnings)
     return existing_mission, warning_msg
 

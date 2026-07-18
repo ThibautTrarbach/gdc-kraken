@@ -1,0 +1,459 @@
+{% extends 'gdc_storm/base.html' %}
+{% block title %}Scan PBO manquants - GDC Storm{% endblock %}
+{% block content %}
+<style>
+.scan-container {
+  background:#fff;max-width:1100px;width:100%;margin:36px auto 0 auto;
+  padding:40px 56px 32px 56px;border-radius:18px;box-shadow:0 6px 32px #0002;box-sizing:border-box;
+}
+.scan-title { font-size:1.8em;font-weight:800;margin-bottom:8px;text-align:center; }
+.scan-recap-table { width:100%; border-collapse:collapse; margin-top:12px; font-size:0.95em; }
+.scan-recap-table th, .scan-recap-table td { padding:10px 12px; text-align:left; border-bottom:1px solid #eee; vertical-align:top; }
+.scan-recap-table th { background:#f7f7f7; font-weight:700; }
+.scan-stats { display:flex; flex-wrap:wrap; gap:12px; margin:18px 0; justify-content:center; }
+.scan-stat {
+  background:#f8f9fa; border:1px solid #e0e0e0; border-radius:10px;
+  padding:12px 18px; min-width:120px; text-align:center;
+}
+.scan-stat .n { font-size:1.4em; font-weight:800; color:#222; }
+.scan-stat .l { font-size:0.85em; color:#666; margin-top:2px; }
+.pbo-missing-badge {
+  display:inline-block; padding:3px 10px; border-radius:6px;
+  background:#ffeaea; color:#b71c1c; font-weight:700; font-size:0.85em;
+}
+.pbo-upgrade-badge {
+  display:inline-block; padding:3px 10px; border-radius:6px;
+  background:#e3f2fd; color:#1565c0; font-weight:700; font-size:0.85em;
+}
+.pbo-orphan-badge {
+  display:inline-block; padding:3px 10px; border-radius:6px;
+  background:#fff3e0; color:#e65100; font-weight:700; font-size:0.85em;
+}
+@media (max-width: 900px) {
+  .scan-container { padding:24px 8px 18px 8px !important; }
+}
+</style>
+<div class="scan-container">
+    <div class="scan-title">Scan des PBO manquants</div>
+    <p style="margin:0 0 20px 0;color:#555;text-align:center;">
+        Vérifie pour chaque mission si le fichier <code>.pbo</code> correspondant est présent
+        sur le serveur. Si un PBO plus récent existe déjà (même nom/carte), propose une mise à jour.
+    </p>
+
+    <div style="text-align:center;margin-bottom:20px;">
+        <button id="run-scan-btn" class="home-btn" style="background:#1976d2;color:#fff;padding:12px 28px;font-size:1.05em;">
+            Lancer le scan
+        </button>
+    </div>
+
+    <div id="scan-result" style="display:none;">
+        <div class="scan-stats">
+            <div class="scan-stat"><div class="n" id="stat-total">0</div><div class="l">Total</div></div>
+            <div class="scan-stat"><div class="n" id="stat-ok">0</div><div class="l">PBO OK</div></div>
+            <div class="scan-stat"><div class="n" id="stat-missing">0</div><div class="l">Manquants</div></div>
+            <div class="scan-stat"><div class="n" id="stat-upgrade">0</div><div class="l">MAJ possible</div></div>
+            <div class="scan-stat"><div class="n" id="stat-orphan">0</div><div class="l">PBO orphelins</div></div>
+            <div class="scan-stat"><div class="n" id="stat-updated">0</div><div class="l">Flags maj</div></div>
+        </div>
+        <div id="scan-message" style="text-align:center;margin-bottom:12px;font-weight:600;"></div>
+    </div>
+
+    <h3 style="margin:24px 0 8px 0;font-size:1.15em;">
+        PBO plus récent trouvé — mise à jour proposée
+        <span id="upgrade-count" style="color:#888;font-weight:500;">({{ upgrade_count }})</span>
+    </h3>
+    <p style="color:#666;font-size:0.92em;margin:0 0 8px 0;">
+        La mission en base a une version plus ancienne qu’un fichier présent sur le serveur.
+        Confirmez pour aligner la mission sur ce fichier (métadonnées + version).
+    </p>
+    <div id="upgrade-list-wrap">
+        {% if upgrade_proposals %}
+        <table class="scan-recap-table" id="upgrade-table">
+            <thead>
+                <tr>
+                    <th>Mission</th>
+                    <th>Version DB</th>
+                    <th>Version fichier</th>
+                    <th>Fichier</th>
+                    <th></th>
+                </tr>
+            </thead>
+            <tbody id="upgrade-tbody">
+                {% for p in upgrade_proposals %}
+                <tr data-mission-id="{{ p.mission_id }}" data-filename="{{ p.filename }}">
+                    <td>
+                        <a href="{% url 'mission_detail' p.mission_id %}" style="color:#1976d2;font-weight:600;">{{ p.name }}</a>
+                        <span class="pbo-upgrade-badge" style="margin-left:8px;">MAJ possible</span>
+                    </td>
+                    <td>V{{ p.old_version }}</td>
+                    <td>V{{ p.new_version }}</td>
+                    <td style="word-break:break-all;"><code>{{ p.filename }}</code></td>
+                    <td>
+                        <button type="button" class="home-btn apply-upgrade-btn" style="background:#1565c0;color:#fff;padding:6px 14px;font-size:0.9em;">
+                            Mettre à jour
+                        </button>
+                    </td>
+                </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+        {% else %}
+        <p id="empty-upgrade" style="color:#666;text-align:center;margin:18px 0;">
+            Aucune mise à jour proposée pour le moment.
+        </p>
+        <table class="scan-recap-table" id="upgrade-table" style="display:none;">
+            <thead>
+                <tr>
+                    <th>Mission</th>
+                    <th>Version DB</th>
+                    <th>Version fichier</th>
+                    <th>Fichier</th>
+                    <th></th>
+                </tr>
+            </thead>
+            <tbody id="upgrade-tbody"></tbody>
+        </table>
+        {% endif %}
+    </div>
+    <div id="apply-message" style="text-align:center;margin:8px 0 16px 0;font-weight:600;"></div>
+
+    <h3 style="margin:32px 0 8px 0;font-size:1.15em;">
+        PBO orphelins (fichier sans mission)
+        <span id="orphan-count" style="color:#888;font-weight:500;">({{ orphan_count }})</span>
+    </h3>
+    <p style="color:#666;font-size:0.92em;margin:0 0 8px 0;">
+        Fichiers <code>.pbo</code> présents sur le serveur sans mission exacte (même nom, carte et version) en base.
+        {% if files_indexed != None %}<span style="color:#888;">({{ files_indexed }} fichier(s) indexé(s) au chargement)</span>{% endif %}
+    </p>
+    <div id="orphan-list-wrap">
+        {% if orphan_pbos %}
+        <table class="scan-recap-table" id="orphan-table">
+            <thead>
+                <tr>
+                    <th>Fichier</th>
+                    <th>Nom</th>
+                    <th>Version</th>
+                    <th>Carte</th>
+                    <th>Note</th>
+                </tr>
+            </thead>
+            <tbody id="orphan-tbody">
+                {% for o in orphan_pbos %}
+                <tr>
+                    <td style="word-break:break-all;"><code>{{ o.filename }}</code>
+                        <span class="pbo-orphan-badge" style="margin-left:8px;">Orphelin</span>
+                    </td>
+                    <td>{% if o.parse_ok %}{{ o.name }}{% else %}—{% endif %}</td>
+                    <td>{% if o.parse_ok %}V{{ o.version }}{% else %}—{% endif %}</td>
+                    <td>{% if o.parse_ok %}{{ o.map }}{% else %}—{% endif %}</td>
+                    <td>
+                        {% if not o.parse_ok %}
+                            Nom de fichier non reconnu
+                        {% elif o.related_mission_id %}
+                            Autre version en base (V{{ o.related_version }}) —
+                            <a href="{% url 'mission_detail' o.related_mission_id %}" style="color:#1976d2;">voir</a>
+                        {% else %}
+                            Aucune mission liée
+                        {% endif %}
+                    </td>
+                </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+        {% else %}
+        <p id="empty-orphan" style="color:#666;text-align:center;margin:18px 0;">
+            Aucun PBO orphelin détecté. Lancez un scan pour actualiser.
+        </p>
+        <table class="scan-recap-table" id="orphan-table" style="display:none;">
+            <thead>
+                <tr>
+                    <th>Fichier</th>
+                    <th>Nom</th>
+                    <th>Version</th>
+                    <th>Carte</th>
+                    <th>Note</th>
+                </tr>
+            </thead>
+            <tbody id="orphan-tbody"></tbody>
+        </table>
+        {% endif %}
+    </div>
+
+    <h3 style="margin:32px 0 8px 0;font-size:1.15em;">
+        Missions sans PBO
+        <span id="list-count" style="color:#888;font-weight:500;">({{ missing_count }})</span>
+    </h3>
+
+    <div id="missing-list-wrap">
+        {% if missing_missions %}
+        <table class="scan-recap-table" id="missing-table">
+            <thead>
+                <tr>
+                    <th>Nom</th>
+                    <th>Version</th>
+                    <th>Carte</th>
+                    <th>Statut</th>
+                </tr>
+            </thead>
+            <tbody id="missing-tbody">
+                {% for mission in missing_missions %}
+                <tr>
+                    <td>
+                        <a href="{% url 'mission_detail' mission.id %}" style="color:#1976d2;font-weight:600;">{{ mission.name }}</a>
+                        <span class="pbo-missing-badge" style="margin-left:8px;">PBO manquant</span>
+                    </td>
+                    <td>{{ mission.version }}</td>
+                    <td>{{ mission.map }}</td>
+                    <td>{{ mission.get_status_display }}</td>
+                </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+        {% else %}
+        <p id="empty-missing" style="color:#666;text-align:center;margin:18px 0;">
+            Aucune mission marquée sans PBO pour le moment. Lancez un scan pour actualiser.
+        </p>
+        <table class="scan-recap-table" id="missing-table" style="display:none;">
+            <thead>
+                <tr>
+                    <th>Nom</th>
+                    <th>Version</th>
+                    <th>Carte</th>
+                    <th>Statut</th>
+                </tr>
+            </thead>
+            <tbody id="missing-tbody"></tbody>
+        </table>
+        {% endif %}
+    </div>
+</div>
+<script>
+(function() {
+    function getCookie(name) {
+        const value = `; ${document.cookie}`;
+        const parts = value.split(`; ${name}=`);
+        if (parts.length === 2) return parts.pop().split(';').shift();
+        return null;
+    }
+
+    function escapeHtml(s) {
+        return String(s == null ? '' : s)
+            .replace(/&/g, '&amp;')
+            .replace(/</g, '&lt;')
+            .replace(/>/g, '&gt;')
+            .replace(/"/g, '&quot;');
+    }
+
+    const btn = document.getElementById('run-scan-btn');
+    const resultBox = document.getElementById('scan-result');
+    const msg = document.getElementById('scan-message');
+    const applyMsg = document.getElementById('apply-message');
+    const tbody = document.getElementById('missing-tbody');
+    const table = document.getElementById('missing-table');
+    const listCount = document.getElementById('list-count');
+    const emptyEl = document.getElementById('empty-missing');
+    const upgradeTbody = document.getElementById('upgrade-tbody');
+    const upgradeTable = document.getElementById('upgrade-table');
+    const upgradeCount = document.getElementById('upgrade-count');
+    const emptyUpgrade = document.getElementById('empty-upgrade');
+    const orphanTbody = document.getElementById('orphan-tbody');
+    const orphanTable = document.getElementById('orphan-table');
+    const orphanCount = document.getElementById('orphan-count');
+    const emptyOrphan = document.getElementById('empty-orphan');
+
+    function renderMissing(missions) {
+        tbody.innerHTML = '';
+        listCount.textContent = '(' + missions.length + ')';
+        if (missions.length === 0) {
+            table.style.display = 'none';
+            if (emptyEl) {
+                emptyEl.style.display = 'block';
+                emptyEl.textContent = 'Aucune mission sans PBO détectée.';
+            }
+            return;
+        }
+        if (emptyEl) emptyEl.style.display = 'none';
+        table.style.display = '';
+        missions.forEach(function(m) {
+            const tr = document.createElement('tr');
+            tr.innerHTML =
+                '<td><a href="/missions/' + m.id + '/" style="color:#1976d2;font-weight:600;">' +
+                escapeHtml(m.name) + '</a> <span class="pbo-missing-badge" style="margin-left:8px;">PBO manquant</span></td>' +
+                '<td>' + escapeHtml(m.version) + '</td>' +
+                '<td>' + escapeHtml(m.map) + '</td>' +
+                '<td>' + escapeHtml(m.status_display || m.status) + '</td>';
+            tbody.appendChild(tr);
+        });
+    }
+
+    function renderUpgrades(proposals) {
+        upgradeTbody.innerHTML = '';
+        upgradeCount.textContent = '(' + proposals.length + ')';
+        if (proposals.length === 0) {
+            upgradeTable.style.display = 'none';
+            if (emptyUpgrade) {
+                emptyUpgrade.style.display = 'block';
+                emptyUpgrade.textContent = 'Aucune mise à jour proposée.';
+            }
+            return;
+        }
+        if (emptyUpgrade) emptyUpgrade.style.display = 'none';
+        upgradeTable.style.display = '';
+        proposals.forEach(function(p) {
+            const tr = document.createElement('tr');
+            tr.dataset.missionId = p.mission_id;
+            tr.dataset.filename = p.filename;
+            tr.innerHTML =
+                '<td><a href="/missions/' + p.mission_id + '/" style="color:#1976d2;font-weight:600;">' +
+                escapeHtml(p.name) + '</a> <span class="pbo-upgrade-badge" style="margin-left:8px;">MAJ possible</span></td>' +
+                '<td>V' + escapeHtml(p.old_version) + '</td>' +
+                '<td>V' + escapeHtml(p.new_version) + '</td>' +
+                '<td style="word-break:break-all;"><code>' + escapeHtml(p.filename) + '</code></td>' +
+                '<td><button type="button" class="home-btn apply-upgrade-btn" style="background:#1565c0;color:#fff;padding:6px 14px;font-size:0.9em;">Mettre à jour</button></td>';
+            upgradeTbody.appendChild(tr);
+        });
+    }
+
+    function renderOrphans(orphans) {
+        orphanTbody.innerHTML = '';
+        orphanCount.textContent = '(' + orphans.length + ')';
+        if (orphans.length === 0) {
+            orphanTable.style.display = 'none';
+            if (emptyOrphan) {
+                emptyOrphan.style.display = 'block';
+                emptyOrphan.textContent = 'Aucun PBO orphelin détecté.';
+            }
+            return;
+        }
+        if (emptyOrphan) emptyOrphan.style.display = 'none';
+        orphanTable.style.display = '';
+        orphans.forEach(function(o) {
+            const tr = document.createElement('tr');
+            let note;
+            if (!o.parse_ok) {
+                note = 'Nom de fichier non reconnu';
+            } else if (o.related_mission_id) {
+                note = 'Autre version en base (V' + escapeHtml(o.related_version) + ') — ' +
+                    '<a href="/missions/' + o.related_mission_id + '/" style="color:#1976d2;">voir</a>';
+            } else {
+                note = 'Aucune mission liée';
+            }
+            tr.innerHTML =
+                '<td style="word-break:break-all;"><code>' + escapeHtml(o.filename) + '</code> ' +
+                '<span class="pbo-orphan-badge" style="margin-left:8px;">Orphelin</span></td>' +
+                '<td>' + (o.parse_ok ? escapeHtml(o.name) : '—') + '</td>' +
+                '<td>' + (o.parse_ok ? 'V' + escapeHtml(o.version) : '—') + '</td>' +
+                '<td>' + (o.parse_ok ? escapeHtml(o.map) : '—') + '</td>' +
+                '<td>' + note + '</td>';
+            orphanTbody.appendChild(tr);
+        });
+    }
+
+    async function applyUpgrade(missionId, filename, button) {
+        const confirmMsg =
+            'Mettre à jour la mission vers le fichier\n' + filename + ' ?\n\n' +
+            'La version et les métadonnées seront alignées sur ce PBO.';
+        if (!window.confirm(confirmMsg)) return;
+
+        button.disabled = true;
+        button.textContent = 'Mise à jour…';
+        applyMsg.style.color = '#555';
+        applyMsg.textContent = '';
+        try {
+            const resp = await fetch('{% url "scan_pbo_missing_apply" %}', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                    'X-CSRFToken': getCookie('csrftoken') || '',
+                },
+                body: JSON.stringify({ mission_id: missionId, filename: filename }),
+            });
+            const json = await resp.json();
+            if (!resp.ok || !json.success) {
+                applyMsg.style.color = '#b71c1c';
+                applyMsg.textContent = (json && json.error) || 'Échec de la mise à jour.';
+                button.disabled = false;
+                button.textContent = 'Mettre à jour';
+                return;
+            }
+            applyMsg.style.color = '#2e7d32';
+            applyMsg.textContent = 'Mission « ' + json.name + ' » mise à jour en V' + json.version + '.';
+            const row = button.closest('tr');
+            if (row) row.remove();
+            const remaining = upgradeTbody.querySelectorAll('tr').length;
+            upgradeCount.textContent = '(' + remaining + ')';
+            if (remaining === 0) {
+                upgradeTable.style.display = 'none';
+                if (emptyUpgrade) {
+                    emptyUpgrade.style.display = 'block';
+                    emptyUpgrade.textContent = 'Aucune mise à jour proposée.';
+                }
+            }
+        } catch (e) {
+            applyMsg.style.color = '#b71c1c';
+            applyMsg.textContent = 'Erreur réseau lors de la mise à jour.';
+            button.disabled = false;
+            button.textContent = 'Mettre à jour';
+        }
+    }
+
+    document.getElementById('upgrade-list-wrap').addEventListener('click', function(e) {
+        const button = e.target.closest('.apply-upgrade-btn');
+        if (!button) return;
+        const row = button.closest('tr');
+        if (!row) return;
+        applyUpgrade(row.dataset.missionId, row.dataset.filename, button);
+    });
+
+    btn.onclick = async function() {
+        btn.disabled = true;
+        btn.textContent = 'Scan en cours…';
+        msg.textContent = '';
+        applyMsg.textContent = '';
+        try {
+            const resp = await fetch('{% url "scan_pbo_missing_run" %}', {
+                method: 'POST',
+                headers: {
+                    'X-CSRFToken': getCookie('csrftoken') || '',
+                },
+            });
+            const json = await resp.json();
+            if (!resp.ok || !json.success) {
+                resultBox.style.display = 'block';
+                msg.style.color = '#b71c1c';
+                msg.textContent = (json && json.error) || 'Erreur lors du scan.';
+                return;
+            }
+            resultBox.style.display = 'block';
+            msg.style.color = '#2e7d32';
+            const upgrades = json.upgrade_proposals || [];
+            const missing = json.missing_missions || [];
+            const orphans = json.orphan_pbos || [];
+            document.getElementById('stat-total').textContent = json.total;
+            document.getElementById('stat-ok').textContent = json.ok_count;
+            document.getElementById('stat-missing').textContent = missing.length;
+            document.getElementById('stat-upgrade').textContent = upgrades.length;
+            document.getElementById('stat-orphan').textContent = orphans.length;
+            document.getElementById('stat-updated').textContent = json.updated_count;
+            msg.textContent =
+                'Scan terminé : ' + missing.length + ' sans PBO, ' +
+                upgrades.length + ' mise(s) à jour possible(s), ' +
+                orphans.length + ' orphelin(s), ' +
+                json.updated_count + ' flag(s) actualisé(s)' +
+                (json.files_indexed != null ? ' — ' + json.files_indexed + ' fichier(s) .pbo indexé(s)' : '') +
+                '.';
+            renderMissing(missing);
+            renderUpgrades(upgrades);
+            renderOrphans(orphans);
+        } catch (e) {
+            resultBox.style.display = 'block';
+            msg.style.color = '#b71c1c';
+            msg.textContent = 'Erreur réseau lors du scan.';
+        } finally {
+            btn.disabled = false;
+            btn.textContent = 'Lancer le scan';
+        }
+    };
+})();
+</script>
+{% endblock %}

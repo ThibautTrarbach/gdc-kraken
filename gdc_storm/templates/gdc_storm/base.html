@@ -21,6 +21,7 @@
             <a href="/recup/" style="color:#FFD600;font-weight:700;">Récup</a>
             {% endif %}
             {% if user.is_superuser %}
+            <a href="/recup/scan-pbo/" style="color:#FFD600;font-weight:700;">Scan PBO</a>
             <a href="/legacy/" style="color:#FFD600;font-weight:700;">LegacyExport</a>
             {% endif %}
         </div>
@@ -39,6 +40,9 @@
                     <div id="user-menu-dropdown" style="display:none;position:absolute;right:0;top:40px;background:#fff;border:2px solid #FFD600;border-radius:10px;box-shadow:0 2px 16px #0004;padding:12px 0;z-index:1002;min-width:180px;">
                         <button id="player-mapping-btn" onclick="window.location.href='/player-mapping/';return false;" style="width:100%;background:none;color:#222;padding:10px 18px;border:none;text-align:left;font-size:1em;cursor:pointer;">PlayerMapping</button>
                         <button id="recup-btn" onclick="window.location.href='/recup/';return false;" style="width:100%;background:none;color:#222;padding:10px 18px;border:none;text-align:left;font-size:1em;cursor:pointer;">Récupérer des missions</button>
+                        {% if user.is_superuser %}
+                        <button id="scan-pbo-btn" onclick="window.location.href='/recup/scan-pbo/';return false;" style="width:100%;background:none;color:#222;padding:10px 18px;border:none;text-align:left;font-size:1em;cursor:pointer;">Scan PBO manquants</button>
+                        {% endif %}
                         <button id="orphan-sessions-btn" onclick="window.location.href='/sessions/orphelines/';return false;" style="width:100%;background:none;color:#222;padding:10px 18px;border:none;text-align:left;font-size:1em;cursor:pointer;">Sessions Orphelines</button>
                         <button id="change-password-btn" onclick="window.location.href='/changer-mot-de-passe/';return false;" style="width:100%;background:none;color:#222;padding:10px 18px;border:none;text-align:left;font-size:1em;cursor:pointer;">Changer mot de passe</button>
                         <form method="post" action="/logout-post/" style="margin:0;">
