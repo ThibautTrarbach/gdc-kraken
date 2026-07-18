@@ -63,10 +63,13 @@ class Mission(models.Model):
 
     def save(self, *args, **kwargs):
         # Vérifie que le nom est bien au format complet CPC-YY[XX]-MissionName
-        allowed_types = '|'.join([choice[0] for choice in Mission.TYPE_CHOICES])
-        pattern = rf"^CPC-(?:{allowed_types})\[\d{{2,3}}\]-[\w\d\s\-\_\(\)@#%&'éèàùâêîôÛäëïöüçÉÈÀÙÂÊÎÔÛÄËÏÖÜÇ]+$"
-        if not re.match(pattern, self.name):
-            raise ValueError("Le champ 'name' doit être au format complet : CPC-YY[XX]-NomMission")
+        # skip_name_check : recovery temporaire (noms hors convention)
+        skip_name_check = kwargs.pop('skip_name_check', False) or getattr(self, '_skip_name_check', False)
+        if not skip_name_check:
+            allowed_types = '|'.join([choice[0] for choice in Mission.TYPE_CHOICES])
+            pattern = rf"^CPC-(?:{allowed_types})\[\d{{2,3}}\]-[\w\d\s\-\_\(\)@#%&'éèàùâêîôÛäëïöüçÉÈÀÙÂÊÎÔÛÄËÏÖÜÇ]+$"
+            if not re.match(pattern, self.name):
+                raise ValueError("Le champ 'name' doit être au format complet : CPC-YY[XX]-NomMission")
         if self.pk is not None:
             orig = Mission.objects.get(pk=self.pk)
             if orig.status != self.status:

@@ -1,4 +1,5 @@
 {% extends 'gdc_storm/base.html' %}
+{% block title %}Récupération des missions - GDC Storm{% endblock %}
 {% block content %}
 <style>
 @media (max-width: 900px) {
@@ -10,16 +11,68 @@
 .action-badge { display: inline-block; padding: 3px 10px; border-radius: 6px; font-weight: 700; font-size: 0.85em; }
 .action-create { background: #e8f5e9; color: #2e7d32; }
 .action-update { background: #fff8e1; color: #f57f17; }
+.action-restore { background: #e3f2fd; color: #1565c0; }
 .action-create_duplicate { background: #fff3cd; color: #856404; }
 .action-error { background: #ffeaea; color: #b71c1c; }
 .upload-file-list { margin-top: 12px; color: #222; font-size: 1em; text-align: left; width: 100%; }
 #dropbox.dragover { border-color: #1976d2; background: #e3f2fd; }
+.recup-help {
+  background: #f8f9fa;
+  border: 1px solid #e0e0e0;
+  border-radius: 10px;
+  padding: 16px 20px;
+  margin: 0 0 24px 0;
+  text-align: left;
+  color: #333;
+  font-size: 0.95em;
+  line-height: 1.5;
+}
+.recup-help h3 { margin: 0 0 10px 0; font-size: 1.05em; }
+.recup-help code {
+  display: inline-block;
+  background: #fff;
+  border: 1px solid #ddd;
+  border-radius: 4px;
+  padding: 2px 8px;
+  font-size: 0.9em;
+  word-break: break-all;
+}
+.recup-help ul { margin: 8px 0 0 0; padding-left: 20px; }
+.recup-help li { margin-bottom: 6px; }
 </style>
 <div class="upload-container" style="background:#fff;max-width:1100px;width:100%;margin:36px auto 0 auto;padding:40px 56px 32px 56px;border-radius:18px;box-shadow:0 6px 32px #0002;box-sizing:border-box;">
-    <div class="upload-title">Publier des missions</div>
-    <p style="margin:0 0 20px 0;color:#555;text-align:center;">
-        Sélectionnez un ou plusieurs fichiers .pbo, analysez-les, puis confirmez les actions proposées.
+    <div class="upload-title">Récupération de l'historique des missions</div>
+    <p style="margin:0 0 16px 0;color:#555;text-align:center;">
+        Envoyez les fichiers .pbo présents dans le cache Arma 3 de votre PC.
+        Les nouvelles missions seront rattachées au compte <b>GDC-RECUP</b>.
+        Si la mission existe déjà en base (même sans fichier PBO), le PBO sera restauré
+        sans changer le propriétaire.
     </p>
+
+    <div class="recup-help">
+        <h3>Où trouver les fichiers missions sur votre PC&nbsp;?</h3>
+        <ul>
+            <li>
+                <b>Cache multijoueur (le plus courant)</b> :<br>
+                <code>%LOCALAPPDATA%\Arma 3\MPMissionsCache\</code><br>
+                En explorateur Windows : collez ce chemin dans la barre d'adresse, ou ouvrez
+                <code>C:\Users\VOTRE_NOM\AppData\Local\Arma 3\MPMissionsCache\</code>
+            </li>
+            <li>
+                <b>Missions éditeur / locales</b> :<br>
+                <code>%USERPROFILE%\Documents\Arma 3\mpmissions\</code>
+            </li>
+            <li>
+                Format de nom attendu :
+                <code>CPC-Type[XX]-Nom-VY.map.pbo</code>
+                (ex. <code>CPC-CO[20]-MaMission-V2.altis.pbo</code>)
+            </li>
+            <li>
+                Les missions incomplètes (sans HC, SQM binarisé, briefing manquant) sont acceptées ici ;
+                un nom de fichier hors format est refusé.
+            </li>
+        </ul>
+    </div>
 
     <div id="upload-step-select">
         <div class="dropbox" id="dropbox">
@@ -153,7 +206,12 @@
         }
     });
 
-    function actionLabel(action) {
+    function actionLabel(item) {
+        const action = typeof item === 'string' ? item : item.action;
+        const d = (typeof item === 'object' && item.details) || {};
+        if (action === 'update' && d.restore) {
+            return 'Restaurer PBO';
+        }
         switch (action) {
             case 'create': return 'Créer';
             case 'update': return 'Mettre à jour';
@@ -163,15 +221,32 @@
         }
     }
 
+    function actionBadgeClass(item) {
+        if (item.action === 'update' && item.details && item.details.restore) {
+            return 'action-restore';
+        }
+        return 'action-' + item.action;
+    }
+
     function detailHtml(item) {
         const d = item.details || {};
         if (item.action === 'error') {
             return item.error || 'Erreur';
         }
         let html = `<div><b>${d.mission_name || ''}</b> — ${d.map_display || d.map || ''} — V${d.version || ''}</div>`;
+        if (d.filename_relaxed) {
+            html += '<div style="color:#856404;">Nom de fichier hors convention — accepté temporairement en récupération.</div>';
+        }
         if (item.action === 'update') {
-            html += `<div>Version : <b>${d.old_version}</b> → <b>${d.new_version || d.version}</b>` +
-                (d.owner ? ` (propriétaire : ${d.owner})` : '') + '</div>';
+                if (d.restore) {
+                    html += `<div>Version en base : <b>${d.old_version}</b>` +
+                        (d.version !== d.old_version ? ` → fichier <b>${d.new_version || d.version}</b>` : ' (identique)') +
+                        (d.owner ? ` — propriétaire : ${d.owner}` : '') + '</div>';
+                    html += '<div style="color:#1565c0;">Fichier PBO absent sur le serveur — restauration depuis votre cache.</div>';
+                } else {
+                html += `<div>Version : <b>${d.old_version}</b> → <b>${d.new_version || d.version}</b>` +
+                    (d.owner ? ` (propriétaire : ${d.owner})` : '') + '</div>';
+            }
         }
         if (item.action === 'create_duplicate' && d.duplicates && d.duplicates.length) {
             html += '<div style="margin-top:6px;">Missions du même nom déjà présentes :</div><ul style="margin:4px 0 0 18px;">';
@@ -188,7 +263,10 @@
             return '—';
         }
         if (item.action === 'update') {
-            return `<label><input type="checkbox" class="confirm-update" data-index="${index}"> Confirmer la mise à jour</label>`;
+            const label = (item.details && item.details.restore)
+                ? 'Confirmer la restauration'
+                : 'Confirmer la mise à jour';
+            return `<label><input type="checkbox" class="confirm-update" data-index="${index}"> ${label}</label>`;
         }
         if (item.action === 'create_duplicate') {
             return `<label><input type="checkbox" class="confirm-publish" data-index="${index}"> Publier quand même</label>`;
@@ -205,7 +283,7 @@
             tr.innerHTML = `
                 <td><input type="checkbox" class="include-item" data-index="${index}" ${canInclude ? 'checked' : 'disabled'}></td>
                 <td style="word-break:break-all;">${item.filename}</td>
-                <td><span class="action-badge action-${item.action}">${actionLabel(item.action)}</span></td>
+                <td><span class="action-badge ${actionBadgeClass(item)}">${actionLabel(item)}</span></td>
                 <td>${detailHtml(item)}</td>
                 <td>${confirmHtml(item, index)}</td>
             `;
@@ -239,7 +317,7 @@
         const formData = new FormData();
         selectedFiles.forEach(f => formData.append('pbo_files', f));
         try {
-            const resp = await fetch('{% url "upload_analyze" %}', {
+            const resp = await fetch('{% url "recup_analyze" %}', {
                 method: 'POST',
                 body: formData,
                 credentials: 'same-origin',
@@ -276,7 +354,12 @@
                 const box = recapBody.querySelector(`.confirm-update[data-index="${index}"]`);
                 confirm_update = !!(box && box.checked);
                 if (!confirm_update) {
-                    showError(`Confirmez la mise à jour pour : ${item.filename}`);
+                    const restore = item.details && item.details.restore;
+                    showError(
+                        restore
+                            ? `Confirmez la restauration pour : ${item.filename}`
+                            : `Confirmez la mise à jour pour : ${item.filename}`
+                    );
                     return;
                 }
             }
@@ -304,9 +387,9 @@
         }
 
         commitBtn.disabled = true;
-        commitBtn.textContent = 'Publication en cours…';
+        commitBtn.textContent = 'Récupération en cours…';
         try {
-            const resp = await fetch('{% url "upload_commit" %}', {
+            const resp = await fetch('{% url "recup_commit" %}', {
                 method: 'POST',
                 credentials: 'same-origin',
                 headers: {
@@ -317,14 +400,14 @@
             });
             const json = await resp.json().catch(() => null);
             if (!resp.ok || !json) {
-                showError((json && json.error) || resp.statusText || 'Erreur lors de la publication');
+                showError((json && json.error) || resp.statusText || 'Erreur lors de la récupération');
                 commitBtn.disabled = false;
                 commitBtn.textContent = 'Appliquer les actions sélectionnées';
                 return;
             }
 
             const results = json.results || [];
-            let html = `<b>${json.success_count || 0} mission(s) publiée(s), ${json.fail_count || 0} échec(s)</b><br><br>`;
+            let html = `<b>${json.success_count || 0} mission(s) récupérée(s), ${json.fail_count || 0} échec(s)</b><br><br>`;
             results.forEach(r => {
                 if (r.success) {
                     const link = r.mission_url
@@ -337,7 +420,7 @@
                 }
             });
             html += `<div style="margin-top:18px;text-align:center;">
-                <button type="button" class="submit-btn" id="again-btn" style="min-width:180px;">Nouvel upload</button>
+                <button type="button" class="submit-btn" id="again-btn" style="min-width:180px;">Nouvel envoi</button>
             </div>`;
 
             stepRecap.style.display = 'none';

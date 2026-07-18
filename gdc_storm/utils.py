@@ -36,3 +36,31 @@ def legacy_parse_mission_filename(filename):
         mission_name = groups[0]
         version = groups[3]
     return mission_name, mission_type, max_players, version, map_name
+
+
+def recup_parse_mission_filename(filename):
+    """
+    Temporaire récup : pas de rejet sur le nom.
+    Essaie le parse strict, sinon legacy, sinon stem/map avec défauts.
+    Retourne ((name, type, max_players, version, map), relaxed) ou None.
+    """
+    import os
+
+    if not filename or not str(filename).lower().endswith('.pbo'):
+        return None
+
+    strict = parse_mission_filename(filename)
+    if strict:
+        return strict, False
+
+    legacy = legacy_parse_mission_filename(filename)
+    if legacy:
+        return legacy, True
+
+    base = os.path.basename(filename)[:-4]
+    if '.' in base:
+        stem, map_name = base.rsplit('.', 1)
+    else:
+        stem, map_name = base, 'unknown'
+    mission_name = (stem or 'Mission-Recup').strip()
+    return (mission_name, 'CO', '20', 'V1', (map_name or 'unknown').lower()), True

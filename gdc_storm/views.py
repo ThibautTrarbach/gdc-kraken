@@ -50,14 +50,33 @@ from django.conf import settings
 from django.utils.dateparse import parse_datetime
 from functools import wraps
 
-UPLOAD_ANALYZE_MAX_FILES = 20
+UPLOAD_ANALYZE_MAX_FILES = 100
+RECUP_USERNAME = 'GDC-RECUP'
+# Temporaire : désactive la validation stricte des noms de fichiers en /recup/
+RECUP_RELAX_FILENAME = False
 
 from yapbol import PBOFile
+
+
+def get_recup_user():
+    """Retourne (et crée si besoin) le compte dédié à la récupération des missions."""
+    user, created = User.objects.get_or_create(
+        username=RECUP_USERNAME,
+        defaults={
+            'is_active': False,
+            'is_staff': False,
+            'is_superuser': False,
+        },
+    )
+    if created:
+        user.set_unusable_password()
+        user.save(update_fields=['password'])
+    return user
 
 from .models import Mission, MapName, Player, GameSession, GameSessionPlayer, ApiToken
 from .models import LegacyRole, LegacyMission, LegacyImportError, LegacyGameSession, LegacyMapNames, LegacyGameSessionPlayerRole, LegacyPlayers
 from .forms import MissionStatusForm
-from gdc_storm.utils import parse_mission_filename
+from gdc_storm.utils import parse_mission_filename, recup_parse_mission_filename
 from gdc_storm.pbo_extract import is_sqm_binarized, extract_mission_data_from_pbo, extract_briefing_from_pbo
 
 
@@ -187,22 +206,60 @@ def _compare_versions(existing_version, new_version_raw):
         return existing_s, new_stripped, new_stripped > existing_s
 
 
-def analyze_pbo_upload(filename, user=None):
+def mission_pbo_on_disk(mission):
+    """True si un fichier .pbo correspondant à la mission est présent en stockage."""
+    storage_root = settings.MISSIONS_PBO_STORAGE_PATH
+    version = str(mission.version).lstrip('Vv')
+    name = mission.name
+    map_name = (mission.map or '').lower()
+    for candidate in (
+        f"{name}-V{version}.{map_name}.pbo",
+        f"{name}-v{version}.{map_name}.pbo",
+    ):
+        if os.path.isfile(os.path.join(storage_root, candidate)):
+            return True
+    return False
+
+
+def pbo_filename_on_disk(filename):
+    """True si ce nom de fichier .pbo exact est déjà présent en stockage."""
+    if not filename:
+        return False
+    path = os.path.join(settings.MISSIONS_PBO_STORAGE_PATH, os.path.basename(filename))
+    return os.path.isfile(path)
+
+
+def analyze_pbo_upload(filename, user=None, *, allow_pbo_restore=False):
     """
     Décide l'action à proposer pour un PBO sans créer/mettre à jour.
     Retourne un dict: action (create|update|create_duplicate|error), error, details.
+
+    allow_pbo_restore : mode récupération — si la mission existe déjà (PBO souvent
+    manquant après perte serveur), propose une restauration si le PBO est absent.
+    Pas d'écrasement si le fichier existe déjà sur le serveur.
     """
     invalid_msg = (
         "Nom de fichier invalide. Format attendu : "
         "CPC-TypeDeMission[XX]-Nom_De_La_Mission-VY.nom_de_map.pbo (XX = 2 chiffres)"
     )
-    parsed = parse_mission_filename(filename)
-    if not parsed:
-        return {
-            'action': 'error',
-            'error': invalid_msg,
-            'details': {},
-        }
+    filename_relaxed = False
+    if allow_pbo_restore and RECUP_RELAX_FILENAME:
+        parsed_pack = recup_parse_mission_filename(filename)
+        if not parsed_pack:
+            return {
+                'action': 'error',
+                'error': "Fichier .pbo illisible ou nom vide.",
+                'details': {},
+            }
+        parsed, filename_relaxed = parsed_pack
+    else:
+        parsed = parse_mission_filename(filename)
+        if not parsed:
+            return {
+                'action': 'error',
+                'error': invalid_msg,
+                'details': {},
+            }
 
     mission_name, mission_type, max_players, version, map_name = parsed
     map_name = map_name.lower()
@@ -212,25 +269,60 @@ def analyze_pbo_upload(filename, user=None):
         'mission_type': mission_type,
         'max_players': int(max_players),
         'version': new_version,
-        'version_raw': version,
+        'version_raw': version if str(version).upper().startswith('V') else f'V{new_version}',
         'map': map_name,
         'map_display': get_map_display(map_name),
+        'filename_relaxed': filename_relaxed,
     }
+
+    # Récup : jamais écraser un PBO déjà présent sous ce nom de fichier
+    if allow_pbo_restore and pbo_filename_on_disk(filename):
+        return {
+            'action': 'error',
+            'error': (
+                f"Le fichier PBO existe déjà sur le serveur, remplacement non autorisé. "
+                f"(Fichier : {filename})"
+            ),
+            'details': details,
+        }
 
     existing = Mission.objects.filter(
         name=mission_name, map=map_name, max_players=int(max_players)
     )
+    # En récup : si pas de match exact, tenter nom+carte (max_players souvent faux hors convention)
+    if allow_pbo_restore and not existing.exists():
+        existing = Mission.objects.filter(name=mission_name, map=map_name)
     if existing.exists():
         existing_mission = existing.first()
         old_version, new_v, is_newer = _compare_versions(existing_mission.version, version)
         details['old_version'] = old_version
         details['existing_mission_id'] = existing_mission.id
         details['owner'] = existing_mission.user.username if existing_mission.user else '—'
+        details['pbo_missing'] = not mission_pbo_on_disk(existing_mission)
+        details['max_players'] = existing_mission.max_players
         if is_newer:
             details['new_version'] = new_v
+            details['restore'] = False
             return {
                 'action': 'update',
                 'error': None,
+                'details': details,
+            }
+        if allow_pbo_restore:
+            if details['pbo_missing']:
+                details['new_version'] = new_v
+                details['restore'] = True
+                return {
+                    'action': 'update',
+                    'error': None,
+                    'details': details,
+                }
+            return {
+                'action': 'error',
+                'error': (
+                    f"Le PBO de cette mission existe déjà sur le serveur, "
+                    f"remplacement non autorisé. (Fichier : {filename})"
+                ),
                 'details': details,
             }
         return {
@@ -279,7 +371,9 @@ def upload_mission(request):
     if not user_is_mission_maker(request.user):
         return HttpResponse("Vous n'avez pas le droit de publier une mission.", status=403)
     clean_temp_files(get_upload_temp_dir())
-    return render(request, 'gdc_storm/upload_mission.html')
+    return render(request, 'gdc_storm/upload_mission.html', {
+        'max_files': UPLOAD_ANALYZE_MAX_FILES,
+    })
 
 
 @login_required
@@ -491,6 +585,243 @@ def upload_commit(request):
         'fail_count': fail_count,
         'results': results,
     })
+
+
+@login_required
+def recup_missions(request):
+    """Page de récupération multi-PBO depuis le cache joueur (auth requise, tout utilisateur)."""
+    clean_temp_files(get_upload_temp_dir())
+    return render(request, 'gdc_storm/recup_missions.html', {
+        'max_files': UPLOAD_ANALYZE_MAX_FILES,
+    })
+
+
+@login_required
+@require_POST
+def recup_analyze(request):
+    """Analyse un ou plusieurs PBO pour la récupération (même logique doublons/versions que l'upload)."""
+    clean_temp_files(get_upload_temp_dir())
+    files = list(request.FILES.getlist('pbo_files'))
+    if not files:
+        single = request.FILES.get('pbo_file')
+        if single:
+            files = [single]
+    if not files:
+        return JsonResponse(
+            {'success': False, 'error': "Aucun fichier .pbo fourni."},
+            status=400,
+        )
+    if len(files) > UPLOAD_ANALYZE_MAX_FILES:
+        return JsonResponse(
+            {
+                'success': False,
+                'error': f"Trop de fichiers (max {UPLOAD_ANALYZE_MAX_FILES} par analyse).",
+            },
+            status=400,
+        )
+
+    items = []
+    for uploaded in files:
+        filename = uploaded.name
+        if not filename.lower().endswith('.pbo'):
+            items.append({
+                'id': str(uuid.uuid4()),
+                'filename': filename,
+                'temp_file_path': None,
+                'temp_file_name': None,
+                'action': 'error',
+                'error': "Le fichier doit être un .pbo.",
+                'details': {},
+            })
+            continue
+        temp_file_path, temp_file_name, filename = save_uploaded_pbo_to_temp(uploaded)
+        analysis = analyze_pbo_upload(filename, request.user, allow_pbo_restore=True)
+        items.append({
+            'id': str(uuid.uuid4()),
+            'filename': filename,
+            'temp_file_path': temp_file_path,
+            'temp_file_name': temp_file_name,
+            'action': analysis['action'],
+            'error': analysis.get('error'),
+            'details': analysis.get('details') or {},
+        })
+
+    return JsonResponse({'success': True, 'items': items})
+
+
+@login_required
+@require_POST
+def recup_commit(request):
+    """Commit récupération : création sous GDC-RECUP, update sans changer le propriétaire, validation soft."""
+    try:
+        payload = json.loads(request.body.decode('utf-8'))
+    except (json.JSONDecodeError, UnicodeDecodeError):
+        return JsonResponse({'success': False, 'error': 'JSON invalide.'}, status=400)
+
+    items = payload.get('items')
+    if not isinstance(items, list) or not items:
+        return JsonResponse(
+            {'success': False, 'error': 'Aucun élément à traiter.'},
+            status=400,
+        )
+    if len(items) > UPLOAD_ANALYZE_MAX_FILES:
+        return JsonResponse(
+            {
+                'success': False,
+                'error': f"Trop d'éléments (max {UPLOAD_ANALYZE_MAX_FILES}).",
+            },
+            status=400,
+        )
+
+    recup_user = get_recup_user()
+    results = []
+    for item in items:
+        filename = item.get('filename') or ''
+        temp_file_path = item.get('temp_file_path')
+        temp_file_name = item.get('temp_file_name')
+        action = item.get('action')
+        confirm_publish = bool(item.get('confirm_publish'))
+        confirm_update = bool(item.get('confirm_update'))
+
+        result = {
+            'filename': filename,
+            'action': action,
+            'success': False,
+            'error': None,
+            'mission_id': None,
+            'mission_url': None,
+        }
+
+        if action == 'error':
+            result['error'] = item.get('error') or 'Action en erreur.'
+            results.append(result)
+            continue
+
+        if not is_safe_upload_temp_path(temp_file_path):
+            result['error'] = "Fichier temporaire manquant, expiré ou chemin invalide."
+            results.append(result)
+            continue
+
+        if not filename and temp_file_name:
+            filename = temp_file_name.split('_', 1)[-1] if '_' in temp_file_name else temp_file_name
+            result['filename'] = filename
+
+        analysis = analyze_pbo_upload(filename, request.user, allow_pbo_restore=True)
+        current_action = analysis['action']
+        details = analysis.get('details') or {}
+
+        if current_action == 'error':
+            result['error'] = analysis.get('error') or 'Analyse en erreur.'
+            results.append(result)
+            continue
+
+        if current_action == 'create_duplicate' and not confirm_publish:
+            result['error'] = "Confirmation « publier quand même » requise (doublon de nom)."
+            results.append(result)
+            continue
+
+        if current_action == 'update' and not confirm_update:
+            result['error'] = "Confirmation de mise à jour requise."
+            results.append(result)
+            continue
+
+        if action in ('create', 'create_duplicate') and current_action == 'update':
+            result['error'] = "La mission existe déjà : une mise à jour est requise (ré-analysez)."
+            results.append(result)
+            continue
+
+        mission_name = details['mission_name']
+        mission_type = details['mission_type']
+        max_players = details['max_players']
+        version = details.get('version_raw') or f"V{details['version']}"
+        map_name = details['map']
+
+        try:
+            if current_action in ('create', 'create_duplicate'):
+                MapName.objects.get_or_create(code_name=map_name, defaults={'display_name': ''})
+                mission, error_message = create_mission_from_pbo(
+                    request,
+                    temp_file_path,
+                    filename,
+                    mission_name,
+                    mission_type,
+                    max_players,
+                    version,
+                    map_name,
+                    strict=False,
+                    owner_user=recup_user,
+                )
+            elif current_action == 'update':
+                existing_id = details.get('existing_mission_id')
+                existing_mission = None
+                if existing_id:
+                    existing_mission = Mission.objects.filter(id=existing_id).first()
+                if not existing_mission:
+                    existing_mission = Mission.objects.filter(
+                        name=mission_name, map=map_name, max_players=int(max_players)
+                    ).first()
+                if not existing_mission:
+                    existing_mission = Mission.objects.filter(
+                        name=mission_name, map=map_name
+                    ).first()
+                if not existing_mission:
+                    result['error'] = "Mission à mettre à jour introuvable."
+                    results.append(result)
+                    continue
+                mission, error_message = update_mission_from_pbo(
+                    request,
+                    existing_mission,
+                    temp_file_path,
+                    filename,
+                    mission_type,
+                    max_players,
+                    version,
+                    map_name,
+                    strict=False,
+                    preserve_owner=True,
+                )
+            else:
+                result['error'] = f"Action inconnue : {current_action}"
+                results.append(result)
+                continue
+        except ValueError as ve:
+            result['error'] = str(ve)
+            results.append(result)
+            continue
+        except Exception as e:
+            logging.exception("Erreur lors du commit récupération PBO")
+            result['error'] = str(e)
+            results.append(result)
+            continue
+
+        if error_message:
+            result['error'] = error_message
+            if mission:
+                result['mission_id'] = mission.id
+                result['mission_url'] = reverse('mission_detail', args=[mission.id])
+                result['success'] = True
+            results.append(result)
+            continue
+
+        result['success'] = True
+        result['mission_id'] = mission.id
+        result['mission_url'] = reverse('mission_detail', args=[mission.id]) + '?success=1'
+        if os.path.exists(temp_file_path):
+            try:
+                os.remove(temp_file_path)
+            except OSError:
+                pass
+        results.append(result)
+
+    success_count = sum(1 for r in results if r['success'])
+    fail_count = len(results) - success_count
+    return JsonResponse({
+        'success': fail_count == 0,
+        'success_count': success_count,
+        'fail_count': fail_count,
+        'results': results,
+    })
+
 
 def get_map_display(map_code):
     """Retourne le display_name d'une carte à partir de son code_name, ou le code si non trouvé."""
@@ -771,8 +1102,22 @@ def user_profile(request, user_id):
     }
     return render(request, 'gdc_storm/user_profile.html', context)
 
-def create_mission_from_pbo(request, temp_file_path, filename, mission_name, mission_type, max_players, version, map_name, error_message=None):
+def create_mission_from_pbo(
+    request,
+    temp_file_path,
+    filename,
+    mission_name,
+    mission_type,
+    max_players,
+    version,
+    map_name,
+    error_message=None,
+    *,
+    strict=True,
+    owner_user=None,
+):
     errors = []
+    warnings = []
     try:
         pbo = PBOFile.read_file(temp_file_path)
     except Exception as e:
@@ -780,32 +1125,60 @@ def create_mission_from_pbo(request, temp_file_path, filename, mission_name, mis
         return None, format_errors(errors)
     is_binarized = is_sqm_binarized(pbo)
     if is_binarized:
-        errors.append("Le fichier mission.sqm est binarisé. Merci de sauvegarder la mission en mode texte dans l'éditeur avant de l'uploader.")
+        msg = (
+            "Le fichier mission.sqm est binarisé. Merci de sauvegarder la mission "
+            "en mode texte dans l'éditeur avant de l'uploader."
+        )
+        (errors if strict else warnings).append(msg)
     # --- Contrôle Headless Client ---
     try:
         sqm_file = pbo['mission.sqm']
         sqm_content = sqm_file.data.decode('utf-8', errors='replace')
         hc_regex = r'name\s*=\s*"HC_Slot";\s*isPlayable\s*=\s*1;[^}]*type\s*=\s*"HeadlessClient_F";'
         if not re.search(hc_regex, sqm_content, re.DOTALL):
-            errors.append("Erreur : la mission ne contient pas de slot Headless Client correctement configuré. Il doit exister un slot avec name=\"HC_Slot\"; isPlayable=1; type=\"HeadlessClient_F\" dans mission.sqm.")
+            msg = (
+                "Erreur : la mission ne contient pas de slot Headless Client correctement configuré. "
+                "Il doit exister un slot avec name=\"HC_Slot\"; isPlayable=1; type=\"HeadlessClient_F\" "
+                "dans mission.sqm."
+            )
+            (errors if strict else warnings).append(msg)
     except KeyError:
-        errors.append("Erreur : mission.sqm introuvable dans le pbo.")
+        msg = "Erreur : mission.sqm introuvable dans le pbo."
+        (errors if strict else warnings).append(msg)
     except Exception as e:
-        errors.append(f"Erreur lors du contrôle Headless Client : {e}")
+        msg = f"Erreur lors du contrôle Headless Client : {e}"
+        (errors if strict else warnings).append(msg)
     data, extraction_problems = extract_mission_data_from_pbo(pbo)
     if extraction_problems:
-        errors.append("Problèmes détectés lors de l'extraction des métadonnées :<ul>" + ''.join(f"<li>{prob}</li>" for prob in extraction_problems) + "</ul>")
+        msg = (
+            "Problèmes détectés lors de l'extraction des métadonnées :<ul>"
+            + ''.join(f"<li>{prob}</li>" for prob in extraction_problems)
+            + "</ul>"
+        )
+        (errors if strict else warnings).append(msg)
     # Extraction du briefing et des images de briefing
+    briefing = None
+    briefing_images = []
     try:
         briefing, briefing_images = extract_briefing_from_pbo(pbo)
         if briefing is None:
-            errors.append("Erreur lors de l'extraction du briefing : briefing non trouvé ou invalide.")
+            msg = "Erreur lors de l'extraction du briefing : briefing non trouvé ou invalide."
+            if strict:
+                errors.append(msg)
+            else:
+                warnings.append(msg)
+                briefing = []
     except Exception as e:
-        errors.append(f"Erreur lors de l'extraction du briefing : {e}")
+        msg = f"Erreur lors de l'extraction du briefing : {e}"
+        if strict:
+            errors.append(msg)
+        else:
+            warnings.append(msg)
+            briefing = []
     if errors:
         return None, format_errors(errors)
     loadscreen_file = None
-    if data['loadScreen']:
+    if data.get('loadScreen'):
         try:
             ext = os.path.splitext(data['loadScreen'])[1].lower()
             if ext in ['.jpg', '.jpeg', '.png']:
@@ -821,49 +1194,74 @@ def create_mission_from_pbo(request, temp_file_path, filename, mission_name, mis
         except Exception as e:
             logging.warning(f"Erreur lors de l'extraction de l'image loadScreen : {e}")
             loadscreen_file = None
-    mission = Mission.objects.create(
+    owner = owner_user if owner_user is not None else request.user
+    mission = Mission(
         name=mission_name,
-        user=request.user,
-        authors=data['author'] or '',
-        min_players=int(data['minPlayers']) if data['minPlayers'] else None,
+        user=owner,
+        authors=data.get('author') or '',
+        min_players=int(data['minPlayers']) if data.get('minPlayers') else None,
         max_players=int(max_players),
         type=mission_type.upper(),
         version=version.lstrip('Vv'),
         map=map_name.lower(),
-        onLoadMission=data['onLoadMission'] or Mission.DEFAULT_NOT_PROVIDED,
-        overviewText=data['overviewText'] or Mission.DEFAULT_NOT_PROVIDED,
+        onLoadMission=data.get('onLoadMission') or Mission.DEFAULT_NOT_PROVIDED,
+        overviewText=data.get('overviewText') or Mission.DEFAULT_NOT_PROVIDED,
         loadScreen=loadscreen_file,
-        briefing=briefing,
+        briefing=briefing if briefing is not None else [],
     )
+    # Mode récup : autorise temporairement les noms hors convention CPC
+    mission.save(skip_name_check=not strict)
     # Stocke la liste des images de briefing pour suppression ultérieure
     if briefing_images:
         mission.briefing_images = briefing_images
-        mission.save(update_fields=['briefing_images'])
+        mission.save(update_fields=['briefing_images'], skip_name_check=not strict)
     try:
         save_pbo_to_storage(temp_file_path, filename)
     except Exception as e:
         return mission, f"Mission créée, mais erreur lors de la sauvegarde du PBO: {e}"
-    return mission, None
+    warning_msg = format_errors(warnings)
+    return mission, warning_msg
+
 
 def format_errors(errors):
     if not errors:
         return None
     return '<br/>'.join(errors)
 
-def update_mission_from_pbo(request, existing_mission, temp_file_path, filename, mission_type, max_players, version, map_name):
+
+def update_mission_from_pbo(
+    request,
+    existing_mission,
+    temp_file_path,
+    filename,
+    mission_type,
+    max_players,
+    version,
+    map_name,
+    *,
+    strict=True,
+    preserve_owner=False,
+):
     is_admin = request.user.is_superuser
     is_owner = existing_mission.user == request.user
-    if not (is_admin or is_owner):
+    if not preserve_owner and not (is_admin or is_owner):
         return None, "Vous n'avez pas le droit de mettre à jour cette mission (seul le propriétaire ou un admin peut le faire)."
     if not os.path.exists(temp_file_path):
         return None, "Fichier temporaire manquant ou expiré lors de la confirmation de mise à jour. Merci de recommencer l'upload."
+    warnings = []
     try:
         pbo = PBOFile.read_file(temp_file_path)
     except Exception as e:
         return None, f"Erreur lors de la lecture du fichier .pbo : {e}"
     is_binarized = is_sqm_binarized(pbo)
     if is_binarized:
-        return None, "Le fichier mission.sqm est binarisé. Merci de sauvegarder la mission en mode texte dans l'éditeur avant de l'uploader."
+        msg = (
+            "Le fichier mission.sqm est binarisé. Merci de sauvegarder la mission "
+            "en mode texte dans l'éditeur avant de l'uploader."
+        )
+        if strict:
+            return None, msg
+        warnings.append(msg)
     data, extraction_problems = extract_mission_data_from_pbo(pbo)
     if extraction_problems:
         error_message = "Problèmes détectés lors de l'extraction des métadonnées :"
@@ -871,27 +1269,38 @@ def update_mission_from_pbo(request, existing_mission, temp_file_path, filename,
         for prob in extraction_problems:
             error_message += f"<li>{prob}</li>"
         error_message += "</ul>"
-        return None, error_message
+        if strict:
+            return None, error_message
+        warnings.append(error_message)
     # Extraction du briefing et des images de briefing
+    briefing = None
+    briefing_images = []
     try:
         briefing, briefing_images = extract_briefing_from_pbo(pbo)
+        if briefing is None and not strict:
+            warnings.append("Erreur lors de l'extraction du briefing : briefing non trouvé ou invalide.")
+            briefing = []
     except Exception as e:
-        return None, f"Erreur lors de l'extraction du briefing : {e}"
+        msg = f"Erreur lors de l'extraction du briefing : {e}"
+        if strict:
+            return None, msg
+        warnings.append(msg)
+        briefing = []
 
     # Archiver l'ancien PBO avant de changer version/map (non bloquant)
     backup_existing_pbo(existing_mission)
 
-    if not is_admin:
+    if not preserve_owner and not is_admin:
         existing_mission.user = request.user
-    existing_mission.authors = data['author'] or ''
-    existing_mission.min_players = int(data['minPlayers']) if data['minPlayers'] else None
+    existing_mission.authors = data.get('author') or ''
+    existing_mission.min_players = int(data['minPlayers']) if data.get('minPlayers') else None
     existing_mission.max_players = int(max_players)
     existing_mission.type = mission_type.upper()
     existing_mission.version = version.lstrip('Vv')
     existing_mission.map = map_name.lower()
-    existing_mission.onLoadMission = data['onLoadMission'] or Mission.DEFAULT_NOT_PROVIDED
-    existing_mission.overviewText = data['overviewText'] or Mission.DEFAULT_NOT_PROVIDED
-    existing_mission.briefing = briefing
+    existing_mission.onLoadMission = data.get('onLoadMission') or Mission.DEFAULT_NOT_PROVIDED
+    existing_mission.overviewText = data.get('overviewText') or Mission.DEFAULT_NOT_PROVIDED
+    existing_mission.briefing = briefing if briefing is not None else []
     # Si des images de briefing existent déjà, les supprimer
     if hasattr(existing_mission, 'briefing_images') and existing_mission.briefing_images:
         for img_path in existing_mission.briefing_images:
@@ -909,7 +1318,7 @@ def update_mission_from_pbo(request, existing_mission, temp_file_path, filename,
         except Exception:
             pass
     loadscreen_file = None
-    if data['loadScreen']:
+    if data.get('loadScreen'):
         try:
             ext = os.path.splitext(data['loadScreen'])[1].lower()
             if ext in ['.jpg', '.jpeg', '.png']:
@@ -926,12 +1335,13 @@ def update_mission_from_pbo(request, existing_mission, temp_file_path, filename,
             logging.warning(f"Erreur lors de l'extraction de l'image loadScreen : {e}")
             loadscreen_file = None
     existing_mission.loadScreen = loadscreen_file
-    existing_mission.save()
+    existing_mission.save(skip_name_check=not strict)
     try:
         save_pbo_to_storage(temp_file_path, filename)
     except Exception as e:
         return existing_mission, f"Mission mise à jour, mais erreur lors de la sauvegarde du PBO: {e}"
-    return existing_mission, None
+    warning_msg = format_errors(warnings)
+    return existing_mission, warning_msg
 
 def player_list(request):
     sort = request.GET.get('sort', 'created_at')
