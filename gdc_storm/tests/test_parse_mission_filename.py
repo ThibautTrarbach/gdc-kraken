@@ -1,5 +1,5 @@
 import unittest
-from gdc_storm.utils import parse_mission_filename
+from gdc_storm.utils import parse_mission_filename, recup_parse_mission_filename
 
 class TestParseMissionFilename(unittest.TestCase):
     def test_valid_filename(self):
@@ -40,6 +40,28 @@ class TestParseMissionFilename(unittest.TestCase):
         result = parse_mission_filename(filename)
         self.assertIsNotNone(result)
         self.assertEqual(result[2], '100')
+
+
+class TestRecupParseMissionFilename(unittest.TestCase):
+    def test_strict_still_ok(self):
+        parsed, relaxed = recup_parse_mission_filename('CPC-CO[20]-TestMission-V2.altis.pbo')
+        self.assertFalse(relaxed)
+        self.assertEqual(parsed[0], 'CPC-CO[20]-TestMission')
+
+    def test_missing_version(self):
+        parsed, relaxed = recup_parse_mission_filename('CPC-CO[20]-TestMission.altis.pbo')
+        self.assertTrue(relaxed)
+        self.assertEqual(parsed[0], 'CPC-CO[20]-TestMission')
+        self.assertEqual(parsed[3], 'V1')
+        self.assertEqual(parsed[4], 'altis')
+
+    def test_freeform_name(self):
+        parsed, relaxed = recup_parse_mission_filename('MyWeirdMission.altis.pbo')
+        self.assertTrue(relaxed)
+        self.assertEqual(parsed[0], 'MyWeirdMission')
+        self.assertEqual(parsed[1], 'CO')
+        self.assertEqual(parsed[4], 'altis')
+
 
 if __name__ == '__main__':
     unittest.main()

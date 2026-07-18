@@ -15,6 +15,7 @@
         <a href="/missions/"><button class="home-btn" style="background: #FFD600; color: #111;">Liste des missions</button></a>
         <a href="/sessions/"><button class="home-btn" style="background: #FFD600; color: #111; margin-left: 12px;">Liste des sessions</button></a>
         {% if user.is_authenticated %}
+            <a href="/recup/"><button class="home-btn" style="background: #FFD600; color: #111; margin-left: 12px;">Récupérer des missions</button></a>
             {% if user.is_superuser %}
                 <a href="/upload/"><button class="home-btn" style="background: #FFD600; color: #111;">Publier une mission</button></a>
             {% else %}
