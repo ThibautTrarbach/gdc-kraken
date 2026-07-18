@@ -23,11 +23,13 @@ def change_password(request):
             return redirect('home')
     return render(request, 'gdc_storm/change_password.html')
 
+import json
 import re
 import uuid
 import os
 import logging
 import glob
+import shutil
 import tempfile
 import datetime
 from collections import defaultdict
@@ -47,6 +49,8 @@ from django.contrib.auth.models import Group, User
 from django.conf import settings
 from django.utils.dateparse import parse_datetime
 from functools import wraps
+
+UPLOAD_ANALYZE_MAX_FILES = 20
 
 from yapbol import PBOFile
 
@@ -83,173 +87,409 @@ def clean_temp_files(temp_dir, max_age_seconds=3600):
         except Exception as e:
             logging.warning(f"Erreur lors du nettoyage du fichier temporaire {temp_file}: {e}")
 
-# Upload mission view
-@login_required
-def upload_mission(request):
-    error_message = None
-    show_confirm = False
-    show_update_confirm = False
-    duplicate_missions = []
-    temp_file_path = None
-    temp_file_name = None
+
+def get_upload_temp_dir():
     temp_dir = os.path.join(tempfile.gettempdir(), 'gdc_storm')
     os.makedirs(temp_dir, exist_ok=True)
-    # Nettoyage automatique des fichiers temporaires orphelins (plus d'1h)
-    clean_temp_files(temp_dir)
+    return temp_dir
+
+
+def is_safe_upload_temp_path(temp_file_path):
+    """Refuse les chemins hors du répertoire temp gdc_storm (anti path traversal)."""
+    if not temp_file_path:
+        return False
+    temp_dir = os.path.realpath(get_upload_temp_dir())
+    real_path = os.path.realpath(temp_file_path)
+    try:
+        return os.path.commonpath([temp_dir, real_path]) == temp_dir and os.path.isfile(real_path)
+    except ValueError:
+        return False
+
+
+def save_uploaded_pbo_to_temp(uploaded_file):
+    """Sauve un UploadedFile dans le répertoire temp et retourne (temp_file_path, temp_file_name, filename)."""
+    filename = uploaded_file.name
+    temp_file_name = f"{uuid.uuid4()}_{filename}"
+    temp_file_path = os.path.join(get_upload_temp_dir(), temp_file_name)
+    with open(temp_file_path, 'wb+') as destination:
+        for chunk in uploaded_file.chunks():
+            destination.write(chunk)
+    return temp_file_path, temp_file_name, filename
+
+
+def save_pbo_to_storage(temp_file_path, filename):
+    """Déplace un PBO temporaire vers le stockage (compatible cross-device Docker)."""
+    dest_dir = settings.MISSIONS_PBO_STORAGE_PATH
+    os.makedirs(dest_dir, exist_ok=True)
+    dest = os.path.join(dest_dir, filename)
+    try:
+        shutil.move(temp_file_path, dest)
+    except PermissionError as e:
+        raise PermissionError(
+            f"{e} — le processus (PUID/PGID) n'a pas le droit d'écrire dans "
+            f"{dest_dir}. Alignez PUID/PGID sur le propriétaire du bind-mount host."
+        ) from e
+    return dest
+
+
+def backup_existing_pbo(existing_mission):
+    """
+    Déplace l'ancien PBO (version courante en DB) vers MISSIONS_PBO_STORAGE_PATH/backup/.
+    Non bloquant : absence ou erreur → warning log, retourne None.
+    """
+    storage_root = settings.MISSIONS_PBO_STORAGE_PATH
+    version = str(existing_mission.version).lstrip('Vv')
+    name = existing_mission.name
+    map_name = (existing_mission.map or '').lower()
+    candidates = [
+        f"{name}-V{version}.{map_name}.pbo",
+        f"{name}-v{version}.{map_name}.pbo",
+    ]
+    old_path = None
+    for candidate in candidates:
+        path = os.path.join(storage_root, candidate)
+        if os.path.isfile(path):
+            old_path = path
+            break
+    if not old_path:
+        logging.warning(
+            "Aucun PBO à archiver pour %s V%s (%s) dans %s",
+            name, version, map_name, storage_root,
+        )
+        return None
+
+    backup_dir = os.path.join(storage_root, 'backup')
+    try:
+        os.makedirs(backup_dir, exist_ok=True)
+        dest_name = os.path.basename(old_path)
+        dest = os.path.join(backup_dir, dest_name)
+        if os.path.exists(dest):
+            stem, ext = os.path.splitext(dest_name)
+            ts = datetime.datetime.now().strftime('%Y%m%d%H%M%S')
+            dest = os.path.join(backup_dir, f"{stem}_{ts}{ext}")
+        shutil.move(old_path, dest)
+        logging.info("PBO archivé : %s → %s", old_path, dest)
+        return dest
+    except Exception as e:
+        logging.warning("Échec archivage PBO %s : %s", old_path, e)
+        return None
+
+
+def _compare_versions(existing_version, new_version_raw):
+    """Retourne (old_str, new_str, is_newer). Compare en int quand possible (évite \"10\" < \"7\")."""
+    new_stripped = str(new_version_raw).lstrip('Vv')
+    try:
+        existing_v = int(existing_version)
+        new_v = int(new_stripped)
+        return str(existing_v), str(new_v), new_v > existing_v
+    except (TypeError, ValueError):
+        existing_s = str(existing_version)
+        return existing_s, new_stripped, new_stripped > existing_s
+
+
+def analyze_pbo_upload(filename, user=None):
+    """
+    Décide l'action à proposer pour un PBO sans créer/mettre à jour.
+    Retourne un dict: action (create|update|create_duplicate|error), error, details.
+    """
+    invalid_msg = (
+        "Nom de fichier invalide. Format attendu : "
+        "CPC-TypeDeMission[XX]-Nom_De_La_Mission-VY.nom_de_map.pbo (XX = 2 chiffres)"
+    )
+    parsed = parse_mission_filename(filename)
+    if not parsed:
+        return {
+            'action': 'error',
+            'error': invalid_msg,
+            'details': {},
+        }
+
+    mission_name, mission_type, max_players, version, map_name = parsed
+    map_name = map_name.lower()
+    new_version = version.lstrip('Vv')
+    details = {
+        'mission_name': mission_name,
+        'mission_type': mission_type,
+        'max_players': int(max_players),
+        'version': new_version,
+        'version_raw': version,
+        'map': map_name,
+        'map_display': get_map_display(map_name),
+    }
+
+    existing = Mission.objects.filter(
+        name=mission_name, map=map_name, max_players=int(max_players)
+    )
+    if existing.exists():
+        existing_mission = existing.first()
+        old_version, new_v, is_newer = _compare_versions(existing_mission.version, version)
+        details['old_version'] = old_version
+        details['existing_mission_id'] = existing_mission.id
+        details['owner'] = existing_mission.user.username if existing_mission.user else '—'
+        if is_newer:
+            details['new_version'] = new_v
+            return {
+                'action': 'update',
+                'error': None,
+                'details': details,
+            }
+        return {
+            'action': 'error',
+            'error': (
+                f"Une mission avec ce nom, cette carte et ce nombre de joueurs max existe déjà "
+                f"avec une version supérieure ou égale ({existing_mission.version}). "
+                f"(Fichier : {filename})"
+            ),
+            'details': details,
+        }
+
+    duplicates_qs = Mission.objects.filter(name=mission_name)
+    if duplicates_qs.exists():
+        duplicate_missions = []
+        for m in duplicates_qs:
+            duplicate_missions.append({
+                'full_name': m.name,
+                'map': get_map_display(m.map),
+                'owner': m.user.username if m.user else '—',
+            })
+        details['duplicates'] = duplicate_missions
+        return {
+            'action': 'create_duplicate',
+            'error': None,
+            'details': details,
+        }
+
+    return {
+        'action': 'create',
+        'error': None,
+        'details': details,
+    }
+
+
+def _mission_maker_forbidden_json():
+    return JsonResponse(
+        {'success': False, 'error': "Vous n'avez pas le droit de publier une mission."},
+        status=403,
+    )
+
+
+@login_required
+def upload_mission(request):
+    """Page d'upload multi-PBO (analyse + récap + commit via endpoints JSON)."""
     if not user_is_mission_maker(request.user):
         return HttpResponse("Vous n'avez pas le droit de publier une mission.", status=403)
-    if request.method == 'POST':
-        # Toujours sauvegarder le fichier en temporaire AVANT tout check
-        if request.FILES.get('pbo_file'):
-            pbo_file = request.FILES['pbo_file']
-            filename = pbo_file.name
-            temp_file_name = f"{uuid.uuid4()}_{filename}"
-            temp_file_path = os.path.join(temp_dir, temp_file_name)
-            with open(temp_file_path, 'wb+') as destination:
-                for chunk in pbo_file.chunks():
-                    destination.write(chunk)
-        elif request.POST.get('temp_file_path'):
-            temp_file_path = request.POST['temp_file_path']
-            temp_file_name = request.POST.get('temp_file_name')
-            filename = temp_file_name.split('_', 1)[-1] if temp_file_name and '_' in temp_file_name else temp_file_name
-        # Cas confirmation : on récupère le chemin du fichier temporaire
-        if request.POST.get('confirm_publish') and temp_file_path:
-            if not os.path.exists(temp_file_path):
-                error_message = "Le fichier temporaire n'existe plus. Merci de recommencer l'upload."
-            else:
-                original_filename = temp_file_name.split('_', 1)[-1] if '_' in temp_file_name else temp_file_name
-                parsed = parse_mission_filename(original_filename)
-                if not parsed:
-                    error_message = "Nom de fichier invalide."
-                else:
-                    mission_name, mission_type, max_players, version, map_name = parsed
-                    map_name = map_name.lower()
-                    MapName.objects.get_or_create(code_name=map_name, defaults={'display_name': ''})
-                    mission, error_message = create_mission_from_pbo(
-                        request, temp_file_path, original_filename, mission_name, mission_type, max_players, version, map_name
-                    )
-                    if not error_message:
-                        return redirect(reverse('mission_detail', args=[mission.id]) + '?success=1')
-        # Confirmation de mise à jour : NE PAS exiger request.FILES['pbo_file'] si fichier temporaire
-        elif request.POST.get('confirm_update'):
-            if 'temp_file_name' in request.POST and 'temp_file_path' in request.POST and os.path.exists(request.POST['temp_file_path']):
-                temp_file_name = request.POST['temp_file_name']
-                temp_file_path = request.POST['temp_file_path']
-                file_name_to_parse = temp_file_name.split('_', 1)[-1] if '_' in temp_file_name else temp_file_name
-                parsed = parse_mission_filename(file_name_to_parse)
-                if not parsed:
-                    error_message = "Nom de fichier invalide lors de la confirmation de mise à jour."
-                    return render(request, 'gdc_storm/upload_mission.html', {
-                        'error_message': error_message
-                    })
-                mission_name, mission_type, max_players, version, map_name = parsed
-                map_name = map_name.lower()
-                existing = Mission.objects.filter(name=mission_name, map=map_name, max_players=int(max_players))
-                if not existing.exists():
-                    error_message = "Mission à mettre à jour introuvable."
-                    return render(request, 'gdc_storm/upload_mission.html', {
-                        'error_message': error_message
-                    })
-                existing_mission = existing.first()
-                updated_mission, error_message = update_mission_from_pbo(
-                    request, existing_mission, temp_file_path, filename, mission_type, max_players, version, map_name
-                )
-                if error_message:
-                    return render(request, 'gdc_storm/upload_mission.html', {
-                        'error_message': error_message
-                    })
-                return redirect(reverse('mission_detail', args=[updated_mission.id]) + '?success=1')
-            else:
-                error_message = "Fichier temporaire manquant ou expiré lors de la confirmation de mise à jour. Merci de recommencer l'upload."
-                return render(request, 'gdc_storm/upload_mission.html', {
-                    'error_message': error_message
-                })
-        elif request.FILES.get('pbo_file'):
-            pbo_file = request.FILES['pbo_file']
-            filename = pbo_file.name
-            parsed = parse_mission_filename(filename)
-            if not parsed:
-                error_message = "Nom de fichier invalide. Format attendu : CPC-TypeDeMission[XX]-Nom_De_La_Mission-VY.nom_de_map.pbo (XX = 2 chiffres)"
-            else:
-                mission_name, mission_type, max_players, version, map_name = parsed
-                map_name = map_name.lower()
-                existing = Mission.objects.filter(name=mission_name, map=map_name, max_players=int(max_players))
-                if existing.exists():
-                    existing_mission = existing.first()
-                    try:
-                        existing_version = int(existing_mission.version)
-                        new_version = int(version.lstrip('Vv'))
-                    except Exception:
-                        existing_version = existing_mission.version
-                        new_version = version.lstrip('Vv')
-                    if str(new_version) > str(existing_version):
-                        temp_file_name = f"{uuid.uuid4()}_{filename}"
-                        temp_file_path = os.path.join(temp_dir, temp_file_name)
-                        with open(temp_file_path, 'wb+') as destination:
-                            for chunk in pbo_file.chunks():
-                                destination.write(chunk)
-                        show_update_confirm = True
-                        try:
-                            map_obj = MapName.objects.get(code_name=map_name)
-                            map_display = map_obj.display_name or map_name
-                        except MapName.DoesNotExist:
-                            map_display = map_name
-                        update_context = {
-                            'mission_name': existing_mission.name,
-                            'map': map_display,
-                            'old_version': existing_mission.version,
-                            'new_version': version.lstrip('Vv'),
-                            'temp_file_path': temp_file_path,
-                            'temp_file_name': temp_file_name,
-                            'filename': filename,
-                        }
-                        return render(request, 'gdc_storm/upload_mission.html', {
-                            'show_update_confirm': show_update_confirm,
-                            **update_context
-                        })
-                    else:
-                        error_message = f"Une mission avec ce nom, cette carte et ce nombre de joueurs max existe déjà avec une version supérieure ou égale ({existing_mission.version}). (Fichier : {filename})"
-                else:
-                    duplicates = Mission.objects.filter(name=mission_name)
-                    if duplicates.exists() and not request.POST.get('confirm_publish'):
-                        show_confirm = True
-                        duplicate_missions = []
-                        for m in duplicates:
-                            try:
-                                map_obj = MapName.objects.get(code_name=m.map)
-                                map_display = map_obj.display_name or m.map
-                            except MapName.DoesNotExist:
-                                map_display = m.map
-                            duplicate_missions.append({
-                                'full_name': f"{m.name}",
-                                'map': map_display,
-                                'owner': m.user.username if m.user else '—'
-                            })
-                        temp_file_name = f"{uuid.uuid4()}_{filename}"
-                        temp_file_path = os.path.join(temp_dir, temp_file_name)
-                        with open(temp_file_path, 'wb+') as destination:
-                            for chunk in pbo_file.chunks():
-                                destination.write(chunk)
-        else:
-            error_message = "Aucun fichier .pbo n'a été fourni. Merci de sélectionner un fichier avant de publier."
-        if not error_message and not show_confirm and not show_update_confirm:
-            MapName.objects.get_or_create(code_name=map_name.lower(), defaults={'display_name': ''})
-            try:
+    clean_temp_files(get_upload_temp_dir())
+    return render(request, 'gdc_storm/upload_mission.html')
+
+
+@login_required
+@require_POST
+def upload_analyze(request):
+    """Analyse un ou plusieurs PBO et propose une action par fichier."""
+    if not user_is_mission_maker(request.user):
+        return _mission_maker_forbidden_json()
+
+    clean_temp_files(get_upload_temp_dir())
+    files = list(request.FILES.getlist('pbo_files'))
+    if not files:
+        # Compat: un seul champ pbo_file
+        single = request.FILES.get('pbo_file')
+        if single:
+            files = [single]
+    if not files:
+        return JsonResponse(
+            {'success': False, 'error': "Aucun fichier .pbo fourni."},
+            status=400,
+        )
+    if len(files) > UPLOAD_ANALYZE_MAX_FILES:
+        return JsonResponse(
+            {
+                'success': False,
+                'error': f"Trop de fichiers (max {UPLOAD_ANALYZE_MAX_FILES} par analyse).",
+            },
+            status=400,
+        )
+
+    items = []
+    for uploaded in files:
+        filename = uploaded.name
+        if not filename.lower().endswith('.pbo'):
+            items.append({
+                'id': str(uuid.uuid4()),
+                'filename': filename,
+                'temp_file_path': None,
+                'temp_file_name': None,
+                'action': 'error',
+                'error': "Le fichier doit être un .pbo.",
+                'details': {},
+            })
+            continue
+        temp_file_path, temp_file_name, filename = save_uploaded_pbo_to_temp(uploaded)
+        analysis = analyze_pbo_upload(filename, request.user)
+        items.append({
+            'id': str(uuid.uuid4()),
+            'filename': filename,
+            'temp_file_path': temp_file_path,
+            'temp_file_name': temp_file_name,
+            'action': analysis['action'],
+            'error': analysis.get('error'),
+            'details': analysis.get('details') or {},
+        })
+
+    return JsonResponse({'success': True, 'items': items})
+
+
+@login_required
+@require_POST
+def upload_commit(request):
+    """Exécute les actions confirmées pour chaque PBO analysé."""
+    if not user_is_mission_maker(request.user):
+        return _mission_maker_forbidden_json()
+
+    try:
+        payload = json.loads(request.body.decode('utf-8'))
+    except (json.JSONDecodeError, UnicodeDecodeError):
+        return JsonResponse({'success': False, 'error': 'JSON invalide.'}, status=400)
+
+    items = payload.get('items')
+    if not isinstance(items, list) or not items:
+        return JsonResponse(
+            {'success': False, 'error': 'Aucun élément à traiter.'},
+            status=400,
+        )
+    if len(items) > UPLOAD_ANALYZE_MAX_FILES:
+        return JsonResponse(
+            {
+                'success': False,
+                'error': f"Trop d'éléments (max {UPLOAD_ANALYZE_MAX_FILES}).",
+            },
+            status=400,
+        )
+
+    results = []
+    for item in items:
+        filename = item.get('filename') or ''
+        temp_file_path = item.get('temp_file_path')
+        temp_file_name = item.get('temp_file_name')
+        action = item.get('action')
+        confirm_publish = bool(item.get('confirm_publish'))
+        confirm_update = bool(item.get('confirm_update'))
+
+        result = {
+            'filename': filename,
+            'action': action,
+            'success': False,
+            'error': None,
+            'mission_id': None,
+            'mission_url': None,
+        }
+
+        if action == 'error':
+            result['error'] = item.get('error') or 'Action en erreur.'
+            results.append(result)
+            continue
+
+        if not is_safe_upload_temp_path(temp_file_path):
+            result['error'] = "Fichier temporaire manquant, expiré ou chemin invalide."
+            results.append(result)
+            continue
+
+        if not filename and temp_file_name:
+            filename = temp_file_name.split('_', 1)[-1] if '_' in temp_file_name else temp_file_name
+            result['filename'] = filename
+
+        # Re-analyse au commit pour éviter les décalages / confirmations oubliées
+        analysis = analyze_pbo_upload(filename, request.user)
+        current_action = analysis['action']
+        details = analysis.get('details') or {}
+
+        if current_action == 'error':
+            result['error'] = analysis.get('error') or 'Analyse en erreur.'
+            results.append(result)
+            continue
+
+        if current_action == 'create_duplicate' and not confirm_publish:
+            result['error'] = "Confirmation « publier quand même » requise (doublon de nom)."
+            results.append(result)
+            continue
+
+        if current_action == 'update' and not confirm_update:
+            result['error'] = "Confirmation de mise à jour requise."
+            results.append(result)
+            continue
+
+        if action in ('create', 'create_duplicate') and current_action == 'update':
+            result['error'] = "La mission existe déjà : une mise à jour est requise (ré-analysez)."
+            results.append(result)
+            continue
+
+        mission_name = details['mission_name']
+        mission_type = details['mission_type']
+        max_players = details['max_players']
+        version = details.get('version_raw') or f"V{details['version']}"
+        map_name = details['map']
+
+        try:
+            if current_action in ('create', 'create_duplicate'):
+                MapName.objects.get_or_create(code_name=map_name, defaults={'display_name': ''})
                 mission, error_message = create_mission_from_pbo(
-                    request, temp_file_path, filename, mission_name, mission_type, max_players, version, map_name
+                    request, temp_file_path, filename, mission_name, mission_type,
+                    max_players, version, map_name,
                 )
-            except ValueError as ve:
-                error_message = str(ve)
-            if not error_message:
-                return redirect(reverse('mission_detail', args=[mission.id]) + '?success=1')
-    return render(request, 'gdc_storm/upload_mission.html', {
-        'error_message': error_message,
-        'show_confirm': show_confirm,
-        'show_update_confirm': show_update_confirm,
-        'duplicate_missions': duplicate_missions,
-        'filename': filename if request.method == 'POST' and request.FILES.get('pbo_file') else None,
-        'temp_file_path': temp_file_path,
-        'temp_file_name': temp_file_name
+            elif current_action == 'update':
+                existing_mission = Mission.objects.filter(
+                    name=mission_name, map=map_name, max_players=int(max_players)
+                ).first()
+                if not existing_mission:
+                    result['error'] = "Mission à mettre à jour introuvable."
+                    results.append(result)
+                    continue
+                mission, error_message = update_mission_from_pbo(
+                    request, existing_mission, temp_file_path, filename,
+                    mission_type, max_players, version, map_name,
+                )
+            else:
+                result['error'] = f"Action inconnue : {current_action}"
+                results.append(result)
+                continue
+        except ValueError as ve:
+            result['error'] = str(ve)
+            results.append(result)
+            continue
+        except Exception as e:
+            logging.exception("Erreur lors du commit upload PBO")
+            result['error'] = str(e)
+            results.append(result)
+            continue
+
+        if error_message:
+            result['error'] = error_message
+            if mission:
+                result['mission_id'] = mission.id
+                result['mission_url'] = reverse('mission_detail', args=[mission.id])
+                result['success'] = True  # mission créée mais PBO éventuellement en warning
+            # Ne pas supprimer le temp si le déplacement PBO a échoué
+            results.append(result)
+            continue
+
+        result['success'] = True
+        result['mission_id'] = mission.id
+        result['mission_url'] = reverse('mission_detail', args=[mission.id]) + '?success=1'
+        # Temp déjà déplacé vers le stockage PBO ; nettoyer s'il reste (cas edge)
+        if os.path.exists(temp_file_path):
+            try:
+                os.remove(temp_file_path)
+            except OSError:
+                pass
+        results.append(result)
+
+    success_count = sum(1 for r in results if r['success'])
+    fail_count = len(results) - success_count
+    return JsonResponse({
+        'success': fail_count == 0,
+        'success_count': success_count,
+        'fail_count': fail_count,
+        'results': results,
     })
 
 def get_map_display(map_code):
@@ -587,7 +827,7 @@ def create_mission_from_pbo(request, temp_file_path, filename, mission_name, mis
         mission.briefing_images = briefing_images
         mission.save(update_fields=['briefing_images'])
     try:
-        os.rename(temp_file_path, os.path.join(settings.MISSIONS_PBO_STORAGE_PATH, filename))
+        save_pbo_to_storage(temp_file_path, filename)
     except Exception as e:
         return mission, f"Mission créée, mais erreur lors de la sauvegarde du PBO: {e}"
     return mission, None
@@ -624,6 +864,9 @@ def update_mission_from_pbo(request, existing_mission, temp_file_path, filename,
         briefing, briefing_images = extract_briefing_from_pbo(pbo)
     except Exception as e:
         return None, f"Erreur lors de l'extraction du briefing : {e}"
+
+    # Archiver l'ancien PBO avant de changer version/map (non bloquant)
+    backup_existing_pbo(existing_mission)
 
     if not is_admin:
         existing_mission.user = request.user
@@ -672,7 +915,7 @@ def update_mission_from_pbo(request, existing_mission, temp_file_path, filename,
     existing_mission.loadScreen = loadscreen_file
     existing_mission.save()
     try:
-        os.rename(temp_file_path, os.path.join(settings.MISSIONS_PBO_STORAGE_PATH, filename))
+        save_pbo_to_storage(temp_file_path, filename)
     except Exception as e:
         return existing_mission, f"Mission mise à jour, mais erreur lors de la sauvegarde du PBO: {e}"
     return existing_mission, None
