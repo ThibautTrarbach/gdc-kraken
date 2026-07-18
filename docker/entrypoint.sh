@@ -44,6 +44,16 @@ PY
     chown -R "${PUID}:${PGID}" "$MEDIA_ROOT"
   fi
 
+  # Warn early if the PBO mount is not writable by the runtime user.
+  if [ -d "$MISSIONS_PBO_STORAGE_PATH" ]; then
+    if ! gosu "${PUID}:${PGID}" sh -c "touch \"$MISSIONS_PBO_STORAGE_PATH/.gdc_write_test\" 2>/dev/null"; then
+      echo "WARNING: $MISSIONS_PBO_STORAGE_PATH is not writable by uid=${PUID} gid=${PGID}." >&2
+      echo "WARNING: Align PUID/PGID in .env with the host owner of MISSIONS_PBO_HOST_PATH (e.g. ls -ln)." >&2
+    else
+      gosu "${PUID}:${PGID}" rm -f "$MISSIONS_PBO_STORAGE_PATH/.gdc_write_test"
+    fi
+  fi
+
   exec gosu "${PUID}:${PGID}" "$0" "$@"
 fi
 
