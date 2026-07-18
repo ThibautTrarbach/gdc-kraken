@@ -1,122 +1,346 @@
 {% extends 'gdc_storm/base.html' %}
 {% block content %}
-{% if messages %}
-    <div class="message-block">
-        {% for message in messages %}
-            <div class="message-{{ message.tags|default:'info' }}">{{ message }}</div>
-        {% endfor %}
-    </div>
-{% endif %}
 <style>
 @media (max-width: 900px) {
   .upload-container { padding: 24px 8px 18px 8px !important; }
-  .mission-duplicate-warning { padding: 18px 4px 14px 4px !important; }
 }
+.upload-recap-table { width: 100%; border-collapse: collapse; margin-top: 12px; font-size: 0.95em; }
+.upload-recap-table th, .upload-recap-table td { padding: 10px 12px; text-align: left; border-bottom: 1px solid #eee; vertical-align: top; }
+.upload-recap-table th { background: #f7f7f7; font-weight: 700; }
+.action-badge { display: inline-block; padding: 3px 10px; border-radius: 6px; font-weight: 700; font-size: 0.85em; }
+.action-create { background: #e8f5e9; color: #2e7d32; }
+.action-update { background: #fff8e1; color: #f57f17; }
+.action-create_duplicate { background: #fff3cd; color: #856404; }
+.action-error { background: #ffeaea; color: #b71c1c; }
+.upload-file-list { margin-top: 12px; color: #222; font-size: 1em; text-align: left; width: 100%; }
+#dropbox.dragover { border-color: #1976d2; background: #e3f2fd; }
 </style>
 <div class="upload-container" style="background:#fff;max-width:1100px;width:100%;margin:36px auto 0 auto;padding:40px 56px 32px 56px;border-radius:18px;box-shadow:0 6px 32px #0002;box-sizing:border-box;">
-    <div class="upload-title">Publier une mission</div>
-    {% if error_message %}
-        <div style="background:#ffeaea;color:#b71c1c;padding:12px 18px;border-radius:6px;margin-bottom:18px;text-align:center;font-weight:600;">
-            {{ error_message }}
-        </div>
-    {% endif %}
-    {% if show_confirm %}
-        <form method="post" enctype="multipart/form-data" id="confirm-form">
-            {% csrf_token %}
-            <input type="hidden" name="confirm_publish" value="1">
-            <input type="hidden" name="temp_file_path" value="{{ temp_file_path }}">
-            <input type="hidden" name="temp_file_name" value="{{ temp_file_name }}">
-            <div class="mission-duplicate-warning" style="background:#fff3cd;color:#856404;padding:32px 32px 28px 32px;border-radius:16px;margin-bottom:32px;text-align:left;font-weight:500;box-shadow:0 6px 32px #0002;width:100%;max-width:100%;margin:0 auto;box-sizing:border-box;overflow-x:auto;">
-                <div style="font-weight:700;font-size:1.3em;margin-bottom:16px;">⚠️ Missions du même nom détectées</div>
-                <div style="margin-bottom:16px;">Des missions avec ce nom existent déjà dans la base&nbsp;:</div>
-                <table style="width:100%;margin-bottom:24px;border-collapse:separate;border-spacing:0 6px;">
-                    <thead>
-                        <tr style="font-size:1.08em;text-align:left;">
-                            <th style="padding-right:24px;">Nom</th>
-                            <th style="padding-right:24px;">Carte</th>
-                            <th>Propriétaire</th>
-                        </tr>
-                    </thead>
-                    <tbody>
-                        {% for m in duplicate_missions %}
-                        <tr style="background:transparent;">
-                            <td style="padding-right:24px;"><b>{{ m.full_name }}</b></td>
-                            <td style="padding-right:24px;">{{ m.map }}</td>
-                            <td><b>{{ m.owner }}</b></td>
-                        </tr>
-                        {% endfor %}
-                    </tbody>
-                </table>
-                <div style="margin-bottom:24px;">Voulez-vous vraiment publier la mission <b>{{ filename }}</b> ?</div>
-                <div style="display:flex;gap:24px;justify-content:center;align-items:center;">
-                    <button type="submit" class="submit-btn" style="background:#FFD600;color:#111;min-width:200px;font-weight:700;font-size:1.1em;">Oui, publier quand même</button>
-                    <a href="/upload/" class="submit-btn" style="background:#e53935;color:#fff;min-width:140px;text-align:center;font-weight:700;font-size:1.1em;">Annuler</a>
-                </div>
-            </div>
-        </form>
-    {% elif show_update_confirm %}
-    <form method="post" enctype="multipart/form-data" id="update-confirm-form">
-        {% csrf_token %}
-        <input type="hidden" name="confirm_update" value="1">
-        {% if temp_file_path %}
-            <input type="hidden" name="temp_file_path" value="{{ temp_file_path }}">
-        {% endif %}
-        {% if temp_file_name %}
-            <input type="hidden" name="temp_file_name" value="{{ temp_file_name }}">
-        {% endif %}
-        <div class="mission-duplicate-warning" style="background:#fff3cd;color:#856404;padding:32px 32px 28px 32px;border-radius:16px;margin-bottom:32px;text-align:left;font-weight:500;box-shadow:0 6px 32px #0002;width:100%;max-width:100%;margin:0 auto;box-sizing:border-box;overflow-x:auto;">
-            <div style="font-weight:700;font-size:1.3em;margin-bottom:16px;">⚠️ Mise à jour de mission détectée</div>
-            <div style="margin-bottom:18px;">Vous êtes sur le point de <b>mettre à jour</b> la mission suivante :</div>
-            <table style="width:auto;margin-bottom:24px;border-collapse:separate;border-spacing:0 6px;">
-                <tr><td style="font-weight:600;padding-right:18px;">Nom :</td><td><b>{{ mission_name }}</b></td></tr>
-                <tr><td style="font-weight:600;padding-right:18px;">Carte :</td><td><b>{{ map }}</b></td></tr>
-                <tr><td style="font-weight:600;padding-right:18px;">Ancienne version :</td><td><b>{{ old_version }}</b></td></tr>
-                <tr><td style="font-weight:600;padding-right:18px;">Nouvelle version :</td><td><b>{{ new_version }}</b></td></tr>
-            </table>
-            <div style="margin-bottom:24px;">Confirmez-vous la <b>mise à jour</b> cette mission ?</div>
-            <div style="display:flex;gap:24px;justify-content:center;align-items:center;">
-                <button type="submit" class="submit-btn" style="background:#FFD600;color:#111;min-width:200px;font-weight:700;font-size:1.1em;">Oui, mettre à jour</button>
-                <a href="/upload/" class="submit-btn" style="background:#e53935;color:#fff;min-width:140px;text-align:center;font-weight:700;font-size:1.1em;">Annuler</a>
-            </div>
-        </div>
-    </form>
-    {% else %}
-    <form method="post" enctype="multipart/form-data">
-        {% csrf_token %}
+    <div class="upload-title">Publier des missions</div>
+    <p style="margin:0 0 20px 0;color:#555;text-align:center;">
+        Sélectionnez un ou plusieurs fichiers .pbo, analysez-les, puis confirmez les actions proposées.
+    </p>
+
+    <div id="upload-step-select">
         <div class="dropbox" id="dropbox">
-            <input type="file" name="pbo_file" id="pbo_file" accept=".pbo" style="display:none;">
-            <span id="dropbox-text">Déposez votre fichier .pbo ici ou cliquez pour sélectionner</span>
+            <input type="file" name="pbo_files" id="pbo_files" accept=".pbo" multiple style="display:none;">
+            <span id="dropbox-text">Déposez vos fichiers .pbo ici ou cliquez pour sélectionner</span>
         </div>
-        <button type="submit" class="submit-btn">Publier</button>
-    </form>
-    {% endif %}
+        <div id="file-list" class="upload-file-list"></div>
+        <button type="button" class="submit-btn" id="analyze-btn" disabled>Analyser</button>
+    </div>
+
+    <div id="upload-step-recap" style="display:none;">
+        <div style="font-weight:700;font-size:1.2em;margin-bottom:8px;">Récapitulatif des actions proposées</div>
+        <div style="margin-bottom:12px;color:#555;">Cochez les missions à traiter et confirmez les mises à jour / doublons si besoin.</div>
+        <div style="overflow-x:auto;">
+            <table class="upload-recap-table" id="recap-table">
+                <thead>
+                    <tr>
+                        <th style="width:40px;">Inclure</th>
+                        <th>Fichier</th>
+                        <th>Action</th>
+                        <th>Détail</th>
+                        <th>Confirmation</th>
+                    </tr>
+                </thead>
+                <tbody id="recap-body"></tbody>
+            </table>
+        </div>
+        <div style="display:flex;gap:16px;justify-content:center;margin-top:24px;flex-wrap:wrap;">
+            <button type="button" class="submit-btn" id="commit-btn" style="background:#FFD600;color:#111;min-width:220px;font-weight:700;">Appliquer les actions sélectionnées</button>
+            <button type="button" class="submit-btn" id="reset-btn" style="background:#e53935;color:#fff;min-width:140px;">Annuler</button>
+        </div>
+    </div>
+
+    <div id="upload-step-result" style="display:none;margin-top:24px;"></div>
+    <div id="upload-error" style="display:none;background:#ffeaea;color:#b71c1c;padding:12px 18px;border-radius:6px;margin-top:18px;text-align:center;font-weight:600;"></div>
 </div>
 <script>
-    const dropbox = document.getElementById('dropbox');
-    const fileInput = document.getElementById('pbo_file');
-    if (dropbox && fileInput) {
-        dropbox.addEventListener('click', () => fileInput.click());
-        dropbox.addEventListener('dragover', e => {
-            e.preventDefault();
-            dropbox.classList.add('dragover');
-        });
-        dropbox.addEventListener('dragleave', e => {
-            e.preventDefault();
-            dropbox.classList.remove('dragover');
-        });
-        dropbox.addEventListener('drop', e => {
-            e.preventDefault();
-            dropbox.classList.remove('dragover');
-            if (e.dataTransfer.files.length) {
-                fileInput.files = e.dataTransfer.files;
-                document.getElementById('dropbox-text').textContent = e.dataTransfer.files[0].name;
+(function () {
+    function getCookie(name) {
+        let cookieValue = null;
+        if (document.cookie && document.cookie !== '') {
+            const cookies = document.cookie.split(';');
+            for (let i = 0; i < cookies.length; i++) {
+                const cookie = cookies[i].trim();
+                if (cookie.substring(0, name.length + 1) === (name + '=')) {
+                    cookieValue = decodeURIComponent(cookie.substring(name.length + 1));
+                    break;
+                }
             }
-        });
-        fileInput.addEventListener('change', e => {
-            if (fileInput.files.length) {
-                document.getElementById('dropbox-text').textContent = fileInput.files[0].name;
-            }
-        });
+        }
+        return cookieValue;
     }
+    const csrftoken = getCookie('csrftoken');
+
+    const dropbox = document.getElementById('dropbox');
+    const fileInput = document.getElementById('pbo_files');
+    const fileList = document.getElementById('file-list');
+    const analyzeBtn = document.getElementById('analyze-btn');
+    const commitBtn = document.getElementById('commit-btn');
+    const resetBtn = document.getElementById('reset-btn');
+    const stepSelect = document.getElementById('upload-step-select');
+    const stepRecap = document.getElementById('upload-step-recap');
+    const stepResult = document.getElementById('upload-step-result');
+    const uploadError = document.getElementById('upload-error');
+    const recapBody = document.getElementById('recap-body');
+
+    let selectedFiles = [];
+    let analyzedItems = [];
+
+    function showError(msg) {
+        uploadError.style.display = msg ? 'block' : 'none';
+        uploadError.textContent = msg || '';
+    }
+
+    function updateFileList() {
+        if (!selectedFiles.length) {
+            fileList.textContent = '';
+            document.getElementById('dropbox-text').textContent =
+                'Déposez vos fichiers .pbo ici ou cliquez pour sélectionner';
+            analyzeBtn.disabled = true;
+            return;
+        }
+        document.getElementById('dropbox-text').textContent =
+            selectedFiles.length === 1
+                ? selectedFiles[0].name
+                : selectedFiles.length + ' fichiers sélectionnés';
+        fileList.innerHTML = '<b>Fichiers sélectionnés :</b><br>' +
+            selectedFiles.map(f => f.name).join('<br>');
+        analyzeBtn.disabled = false;
+    }
+
+    function setFilesFromList(fileListLike) {
+        selectedFiles = Array.from(fileListLike).filter(f =>
+            f.name.toLowerCase().endsWith('.pbo')
+        );
+        updateFileList();
+        showError('');
+        stepResult.style.display = 'none';
+    }
+
+    dropbox.addEventListener('click', () => fileInput.click());
+    dropbox.addEventListener('dragover', e => {
+        e.preventDefault();
+        dropbox.classList.add('dragover');
+    });
+    dropbox.addEventListener('dragleave', e => {
+        e.preventDefault();
+        dropbox.classList.remove('dragover');
+    });
+    dropbox.addEventListener('drop', e => {
+        e.preventDefault();
+        dropbox.classList.remove('dragover');
+        if (e.dataTransfer.files.length) {
+            setFilesFromList(e.dataTransfer.files);
+        }
+    });
+    fileInput.addEventListener('change', () => {
+        if (fileInput.files.length) {
+            setFilesFromList(fileInput.files);
+        }
+    });
+
+    function actionLabel(action) {
+        switch (action) {
+            case 'create': return 'Créer';
+            case 'update': return 'Mettre à jour';
+            case 'create_duplicate': return 'Créer (doublon nom)';
+            case 'error': return 'Erreur';
+            default: return action;
+        }
+    }
+
+    function detailHtml(item) {
+        const d = item.details || {};
+        if (item.action === 'error') {
+            return item.error || 'Erreur';
+        }
+        let html = `<div><b>${d.mission_name || ''}</b> — ${d.map_display || d.map || ''} — V${d.version || ''}</div>`;
+        if (item.action === 'update') {
+            html += `<div>Version : <b>${d.old_version}</b> → <b>${d.new_version || d.version}</b>` +
+                (d.owner ? ` (propriétaire : ${d.owner})` : '') + '</div>';
+        }
+        if (item.action === 'create_duplicate' && d.duplicates && d.duplicates.length) {
+            html += '<div style="margin-top:6px;">Missions du même nom déjà présentes :</div><ul style="margin:4px 0 0 18px;">';
+            d.duplicates.forEach(m => {
+                html += `<li>${m.full_name} — ${m.map} — ${m.owner}</li>`;
+            });
+            html += '</ul>';
+        }
+        return html;
+    }
+
+    function confirmHtml(item, index) {
+        if (item.action === 'error') {
+            return '—';
+        }
+        if (item.action === 'update') {
+            return `<label><input type="checkbox" class="confirm-update" data-index="${index}"> Confirmer la mise à jour</label>`;
+        }
+        if (item.action === 'create_duplicate') {
+            return `<label><input type="checkbox" class="confirm-publish" data-index="${index}"> Publier quand même</label>`;
+        }
+        return '—';
+    }
+
+    function renderRecap(items) {
+        analyzedItems = items;
+        recapBody.innerHTML = '';
+        items.forEach((item, index) => {
+            const tr = document.createElement('tr');
+            const canInclude = item.action !== 'error';
+            tr.innerHTML = `
+                <td><input type="checkbox" class="include-item" data-index="${index}" ${canInclude ? 'checked' : 'disabled'}></td>
+                <td style="word-break:break-all;">${item.filename}</td>
+                <td><span class="action-badge action-${item.action}">${actionLabel(item.action)}</span></td>
+                <td>${detailHtml(item)}</td>
+                <td>${confirmHtml(item, index)}</td>
+            `;
+            recapBody.appendChild(tr);
+        });
+        stepSelect.style.display = 'none';
+        stepRecap.style.display = 'block';
+        stepResult.style.display = 'none';
+    }
+
+    function resetUi() {
+        selectedFiles = [];
+        analyzedItems = [];
+        fileInput.value = '';
+        updateFileList();
+        stepSelect.style.display = 'block';
+        stepRecap.style.display = 'none';
+        stepResult.style.display = 'none';
+        showError('');
+        analyzeBtn.disabled = false;
+        commitBtn.disabled = false;
+        analyzeBtn.textContent = 'Analyser';
+        commitBtn.textContent = 'Appliquer les actions sélectionnées';
+    }
+
+    analyzeBtn.addEventListener('click', async () => {
+        if (!selectedFiles.length) return;
+        showError('');
+        analyzeBtn.disabled = true;
+        analyzeBtn.textContent = 'Analyse en cours…';
+        const formData = new FormData();
+        selectedFiles.forEach(f => formData.append('pbo_files', f));
+        try {
+            const resp = await fetch('{% url "upload_analyze" %}', {
+                method: 'POST',
+                body: formData,
+                credentials: 'same-origin',
+                headers: { 'X-CSRFToken': csrftoken }
+            });
+            const json = await resp.json().catch(() => null);
+            if (!resp.ok || !json || !json.success) {
+                showError((json && json.error) || resp.statusText || 'Erreur lors de l\'analyse');
+                analyzeBtn.disabled = false;
+                analyzeBtn.textContent = 'Analyser';
+                return;
+            }
+            renderRecap(json.items || []);
+        } catch (e) {
+            showError(String(e));
+            analyzeBtn.disabled = false;
+            analyzeBtn.textContent = 'Analyser';
+        }
+    });
+
+    commitBtn.addEventListener('click', async () => {
+        showError('');
+        const payloadItems = [];
+        const includeChecks = Array.from(recapBody.querySelectorAll('.include-item'));
+        for (const cb of includeChecks) {
+            if (!cb.checked || cb.disabled) continue;
+            const index = parseInt(cb.dataset.index, 10);
+            const item = analyzedItems[index];
+            if (!item || item.action === 'error') continue;
+
+            let confirm_update = false;
+            let confirm_publish = false;
+            if (item.action === 'update') {
+                const box = recapBody.querySelector(`.confirm-update[data-index="${index}"]`);
+                confirm_update = !!(box && box.checked);
+                if (!confirm_update) {
+                    showError(`Confirmez la mise à jour pour : ${item.filename}`);
+                    return;
+                }
+            }
+            if (item.action === 'create_duplicate') {
+                const box = recapBody.querySelector(`.confirm-publish[data-index="${index}"]`);
+                confirm_publish = !!(box && box.checked);
+                if (!confirm_publish) {
+                    showError(`Confirmez « publier quand même » pour : ${item.filename}`);
+                    return;
+                }
+            }
+            payloadItems.push({
+                filename: item.filename,
+                temp_file_path: item.temp_file_path,
+                temp_file_name: item.temp_file_name,
+                action: item.action,
+                confirm_update: confirm_update,
+                confirm_publish: confirm_publish
+            });
+        }
+
+        if (!payloadItems.length) {
+            showError('Aucune action sélectionnée à appliquer.');
+            return;
+        }
+
+        commitBtn.disabled = true;
+        commitBtn.textContent = 'Publication en cours…';
+        try {
+            const resp = await fetch('{% url "upload_commit" %}', {
+                method: 'POST',
+                credentials: 'same-origin',
+                headers: {
+                    'X-CSRFToken': csrftoken,
+                    'Content-Type': 'application/json'
+                },
+                body: JSON.stringify({ items: payloadItems })
+            });
+            const json = await resp.json().catch(() => null);
+            if (!resp.ok || !json) {
+                showError((json && json.error) || resp.statusText || 'Erreur lors de la publication');
+                commitBtn.disabled = false;
+                commitBtn.textContent = 'Appliquer les actions sélectionnées';
+                return;
+            }
+
+            const results = json.results || [];
+            let html = `<b>${json.success_count || 0} mission(s) publiée(s), ${json.fail_count || 0} échec(s)</b><br><br>`;
+            results.forEach(r => {
+                if (r.success) {
+                    const link = r.mission_url
+                        ? ` <a href="${r.mission_url}">Voir la mission</a>`
+                        : '';
+                    const warn = r.error ? ` <span style="color:#856404">(${r.error})</span>` : '';
+                    html += `<div style="color:#388e3c;margin-bottom:6px;">${r.filename} : OK${warn}${link}</div>`;
+                } else {
+                    html += `<div style="color:#d32f2f;margin-bottom:6px;">${r.filename} : ${r.error || 'Erreur'}</div>`;
+                }
+            });
+            html += `<div style="margin-top:18px;text-align:center;">
+                <button type="button" class="submit-btn" id="again-btn" style="min-width:180px;">Nouvel upload</button>
+            </div>`;
+
+            stepRecap.style.display = 'none';
+            stepResult.style.display = 'block';
+            stepResult.innerHTML = html;
+            document.getElementById('again-btn').addEventListener('click', resetUi);
+        } catch (e) {
+            showError(String(e));
+            commitBtn.disabled = false;
+            commitBtn.textContent = 'Appliquer les actions sélectionnées';
+        }
+    });
+
+    resetBtn.addEventListener('click', resetUi);
+})();
 </script>
 {% endblock %}
