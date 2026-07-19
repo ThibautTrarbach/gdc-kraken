@@ -19,29 +19,179 @@ body {
 .navbar {
     background: #111;
     color: #FFD600;
-    padding: 0 30px;
-    height: 60px;
+    padding: 0 24px;
+    min-height: 60px;
     display: flex;
     align-items: center;
-    justify-content: flex-start;
+    justify-content: space-between;
+    gap: 16px;
     box-shadow: 0 2px 8px rgba(0,0,0,0.04);
+    position: relative;
+    z-index: 100;
 }
 .navbar .nav {
     display: flex;
-    gap: 20px;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: 4px;
 }
 .navbar a {
     color: #FFD600;
     text-decoration: none;
     font-weight: 500;
-    font-size: 1.1em;
-    padding: 8px 16px;
+    font-size: 1.05em;
+    padding: 8px 14px;
     border-radius: 4px;
     transition: background 0.2s, color 0.2s;
 }
 .navbar a:hover {
     background: #FFD600;
     color: #111;
+}
+.navbar .nav-user {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    flex-shrink: 0;
+    margin-left: auto;
+}
+.navbar .nav-username {
+    font-weight: 600;
+    text-decoration: underline;
+    padding: 6px 10px;
+}
+.navbar .nav-login-btn {
+    background: #FFD600;
+    color: #111 !important;
+    padding: 6px 16px;
+    border-radius: 4px;
+    font-weight: 600;
+}
+.navbar .nav-login-btn:hover {
+    background: #ffe566;
+    color: #111 !important;
+}
+.navbar .nav-dropdown {
+    position: relative;
+}
+.navbar .nav-dropdown-btn {
+    background: none;
+    border: none;
+    color: #FFD600;
+    font-weight: 600;
+    font-size: 1.05em;
+    font-family: inherit;
+    padding: 8px 14px;
+    border-radius: 4px;
+    cursor: pointer;
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+}
+.navbar .nav-dropdown-btn:hover,
+.navbar .nav-dropdown-btn[aria-expanded="true"] {
+    background: #FFD600;
+    color: #111;
+}
+.navbar .nav-caret {
+    font-size: 0.75em;
+    line-height: 1;
+}
+.navbar .nav-menu-btn {
+    background: none;
+    border: none;
+    padding: 6px;
+    cursor: pointer;
+    display: flex;
+    flex-direction: column;
+    justify-content: center;
+    gap: 5px;
+    width: 36px;
+    height: 36px;
+    border-radius: 4px;
+}
+.navbar .nav-menu-btn span {
+    display: block;
+    width: 22px;
+    height: 2px;
+    background: #FFD600;
+    border-radius: 2px;
+    margin: 0 auto;
+}
+.navbar .nav-menu-btn:hover,
+.navbar .nav-menu-btn[aria-expanded="true"] {
+    background: rgba(255, 214, 0, 0.15);
+}
+.navbar .nav-dropdown-panel {
+    position: absolute;
+    top: calc(100% + 6px);
+    left: 0;
+    min-width: 200px;
+    background: #fff;
+    border: 2px solid #FFD600;
+    border-radius: 10px;
+    box-shadow: 0 6px 20px rgba(0, 0, 0, 0.2);
+    padding: 6px 0;
+    z-index: 1002;
+    display: flex;
+    flex-direction: column;
+}
+.navbar .nav-dropdown-panel[hidden] {
+    display: none !important;
+}
+.navbar .nav-dropdown-right .nav-dropdown-panel {
+    left: auto;
+    right: 0;
+}
+.navbar .nav-dropdown-panel a,
+.navbar .nav-dropdown-panel button {
+    display: block;
+    width: 100%;
+    box-sizing: border-box;
+    background: none;
+    border: none;
+    color: #222;
+    text-align: left;
+    font-size: 0.98em;
+    font-family: inherit;
+    font-weight: 500;
+    padding: 10px 16px;
+    text-decoration: none;
+    cursor: pointer;
+    border-radius: 0;
+}
+.navbar .nav-dropdown-panel a:hover,
+.navbar .nav-dropdown-panel button:hover {
+    background: #fff8d6;
+    color: #111;
+}
+.navbar .nav-logout-form {
+    margin: 4px 0 0;
+    border-top: 1px solid #eee;
+    padding-top: 4px;
+}
+.navbar .nav-logout-form button {
+    color: #111;
+    font-weight: 600;
+    background: #FFD600 !important;
+}
+.navbar .nav-logout-form button:hover {
+    background: #ffe566 !important;
+}
+@media (max-width: 900px) {
+    .navbar {
+        padding: 8px 12px;
+        min-height: auto;
+        flex-wrap: wrap;
+    }
+    .navbar .nav {
+        gap: 2px;
+    }
+    .navbar a,
+    .navbar .nav-dropdown-btn {
+        font-size: 0.95em;
+        padding: 6px 10px;
+    }
 }
 .content {
     flex: 1;
@@ -122,7 +272,7 @@ footer {
     box-sizing: border-box;
 }
 label { font-weight: 500; color: #111; }
-input, select {
+input:not([type="checkbox"]):not([type="radio"]):not([type="submit"]):not([type="button"]), select {
     width: 100%;
     min-width: 0;
     max-width: 100%;
@@ -134,6 +284,16 @@ input, select {
     font-size: 1em;
     background: #fffbe6;
     display: block;
+}
+input[type="checkbox"],
+input[type="radio"] {
+    display: inline-block;
+    width: auto;
+    max-width: none;
+    margin: 0;
+    padding: 0;
+    border: none;
+    background: transparent;
 }
 .dropbox {
     border: 2px dashed #FFD600;
@@ -271,3 +431,96 @@ tr:last-child td {
 .modern-table th, .modern-table td { padding: 10px 14px; border-bottom: 1px solid #e0e7ef; }
 .modern-table th { background: #e3eaf6; color: #222; font-weight: 600; }
 .modern-table tr:hover { background: #d0e6fa; }
+
+/* Liste des missions : colonnes masquables + scroll horizontal */
+.missions-list-page .missions-table-scroll {
+    width: 100%;
+    overflow-x: auto;
+    -webkit-overflow-scrolling: touch;
+}
+.missions-list-page .missions-table [data-col].col-hidden {
+    display: none !important;
+}
+.missions-list-page .col-toggle-wrap {
+    position: relative;
+}
+.missions-list-page .columns-menu {
+    position: absolute;
+    right: 0;
+    top: calc(100% + 6px);
+    z-index: 40;
+    width: 280px;
+    padding: 12px;
+    background: #fff;
+    border: 1px solid #d0d7de;
+    border-radius: 10px;
+    box-shadow: 0 8px 24px rgba(0, 0, 0, 0.14);
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 4px 10px;
+}
+.missions-list-page .columns-menu[hidden] {
+    display: none !important;
+}
+.missions-list-page .columns-menu-title {
+    grid-column: 1 / -1;
+    font-size: 0.8em;
+    font-weight: 600;
+    color: #607d8b;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+    margin-bottom: 4px;
+    padding-bottom: 6px;
+    border-bottom: 1px solid #e8eef2;
+}
+.missions-list-page .columns-menu label {
+    display: flex !important;
+    flex-direction: row !important;
+    align-items: center;
+    gap: 8px;
+    margin: 0;
+    padding: 6px 4px;
+    font-size: 0.92em;
+    font-weight: 500;
+    color: #31415a;
+    cursor: pointer;
+    white-space: nowrap;
+    border-radius: 6px;
+}
+.missions-list-page .columns-menu label:hover {
+    background: #f4f7fa;
+}
+.missions-list-page .columns-menu label.is-locked {
+    opacity: 0.5;
+    cursor: default;
+}
+.missions-list-page .columns-menu input[type="checkbox"] {
+    display: inline-block !important;
+    width: 15px !important;
+    height: 15px !important;
+    min-width: 15px !important;
+    max-width: 15px !important;
+    margin: 0 !important;
+    padding: 0 !important;
+    background: #fff !important;
+    flex-shrink: 0;
+}
+.missions-list-page .col-jouee {
+    text-align: center;
+    white-space: nowrap;
+}
+@media (max-width: 900px) {
+    .missions-list-page {
+        padding-left: 12px !important;
+        padding-right: 12px !important;
+        margin-left: 8px !important;
+        margin-right: 8px !important;
+    }
+    .missions-list-page .missions-title {
+        font-size: 1.5em !important;
+    }
+    .missions-list-page .columns-menu {
+        width: min(280px, calc(100vw - 40px));
+        grid-template-columns: 1fr;
+    }
+}

@@ -18,60 +18,78 @@
             <a href="/maps/">Cartes</a>
             <a href="/players/">Joueurs</a>
             {% if user.is_authenticated %}
-            <a href="/recup/" style="color:#FFD600;font-weight:700;">Récup</a>
+            <a href="/recup/">Récup</a>
             {% endif %}
             {% if user.is_superuser %}
-            <a href="/recup/scan-pbo/" style="color:#FFD600;font-weight:700;">Scan PBO</a>
-            <a href="/legacy/" style="color:#FFD600;font-weight:700;">LegacyExport</a>
+            <div class="nav-dropdown" id="admin-menu">
+                <button type="button" class="nav-dropdown-btn" id="admin-menu-btn" aria-expanded="false" aria-haspopup="true">
+                    Admin <span class="nav-caret">▾</span>
+                </button>
+                <div class="nav-dropdown-panel" id="admin-menu-dropdown" hidden>
+                    <a href="/recup/scan-pbo/">Scan PBO</a>
+                    <a href="/sessions/orphelines/">Sessions orphelines</a>
+                    <a href="/legacy/">Legacy export</a>
+                </div>
+            </div>
             {% endif %}
         </div>
-        <div class="nav-user" style="position:absolute;right:32px;top:18px;">
+        <div class="nav-user">
             {% if user.is_authenticated %}
-                <a href="/users/{{ user.id }}/" style="color:#FFD600;font-weight:600;margin-right:12px;text-decoration:underline;">{{ user.username }}</a>
-                <!-- MENU UTILISATEUR -->
-                <div style="display:inline-block;position:relative;">
-                    <button id="user-menu-btn" style="background:none;border:none;padding:0;margin:0;cursor:pointer;vertical-align:middle;">
-                        <span style="display:block;width:32px;height:32px;position:relative;">
-                            <span style="display:block;width:24px;height:3px;background:#FFD600;border-radius:2px;position:absolute;left:4px;top:8px;"></span>
-                            <span style="display:block;width:24px;height:3px;background:#FFD600;border-radius:2px;position:absolute;left:4px;top:15px;"></span>
-                            <span style="display:block;width:24px;height:3px;background:#FFD600;border-radius:2px;position:absolute;left:4px;top:22px;"></span>
-                        </span>
+                <a href="/users/{{ user.id }}/" class="nav-username">{{ user.username }}</a>
+                <div class="nav-dropdown nav-dropdown-right" id="user-menu">
+                    <button type="button" class="nav-menu-btn" id="user-menu-btn" aria-label="Menu utilisateur" aria-expanded="false" aria-haspopup="true">
+                        <span></span><span></span><span></span>
                     </button>
-                    <div id="user-menu-dropdown" style="display:none;position:absolute;right:0;top:40px;background:#fff;border:2px solid #FFD600;border-radius:10px;box-shadow:0 2px 16px #0004;padding:12px 0;z-index:1002;min-width:180px;">
-                        <button id="player-mapping-btn" onclick="window.location.href='/player-mapping/';return false;" style="width:100%;background:none;color:#222;padding:10px 18px;border:none;text-align:left;font-size:1em;cursor:pointer;">PlayerMapping</button>
-                        <button id="recup-btn" onclick="window.location.href='/recup/';return false;" style="width:100%;background:none;color:#222;padding:10px 18px;border:none;text-align:left;font-size:1em;cursor:pointer;">Récupérer des missions</button>
-                        {% if user.is_superuser %}
-                        <button id="scan-pbo-btn" onclick="window.location.href='/recup/scan-pbo/';return false;" style="width:100%;background:none;color:#222;padding:10px 18px;border:none;text-align:left;font-size:1em;cursor:pointer;">Scan PBO manquants</button>
-                        {% endif %}
-                        <button id="orphan-sessions-btn" onclick="window.location.href='/sessions/orphelines/';return false;" style="width:100%;background:none;color:#222;padding:10px 18px;border:none;text-align:left;font-size:1em;cursor:pointer;">Sessions Orphelines</button>
+                    <div class="nav-dropdown-panel" id="user-menu-dropdown" hidden>
+                        <a href="/player-mapping/">Player mapping</a>
                         {% if show_account_connections %}
-                        <button id="account-connections-btn" onclick="window.location.href='{% url 'account_connections' %}';return false;" style="width:100%;background:none;color:#222;padding:10px 18px;border:none;text-align:left;font-size:1em;cursor:pointer;">Connexions</button>
+                        <a href="{% url 'account_connections' %}">Connexions</a>
                         {% endif %}
-                        <button id="change-password-btn" onclick="window.location.href='/changer-mot-de-passe/';return false;" style="width:100%;background:none;color:#222;padding:10px 18px;border:none;text-align:left;font-size:1em;cursor:pointer;">{% if user_has_usable_password %}Changer mot de passe{% else %}Définir mot de passe{% endif %}</button>
-                        <form method="post" action="/logout-post/" style="margin:0;">
+                        <a href="/changer-mot-de-passe/">{% if user_has_usable_password %}Mot de passe{% else %}Définir mot de passe{% endif %}</a>
+                        <form method="post" action="/logout-post/" class="nav-logout-form">
                             {% csrf_token %}
-                            <button type="submit" class="home-btn" style="width:100%;background:#FFD600;color:#111;padding:10px 18px;border:none;text-align:left;font-size:1em;border-radius:0 0 10px 10px;">Déconnexion</button>
+                            <button type="submit">Déconnexion</button>
                         </form>
                     </div>
                 </div>
-                <script>
-                const userMenuBtn = document.getElementById('user-menu-btn');
-                const userMenuDropdown = document.getElementById('user-menu-dropdown');
-                userMenuBtn.onclick = (e) => {
-                    e.stopPropagation();
-                    userMenuDropdown.style.display = userMenuDropdown.style.display === 'none' ? 'block' : 'none';
-                };
-                document.addEventListener('click', function(e) {
-                    if (!userMenuDropdown.contains(e.target) && e.target !== userMenuBtn) {
-                        userMenuDropdown.style.display = 'none';
-                    }
-                });
-                </script>
             {% else %}
-                <a href="/login/" class="home-btn" style="background:#FFD600;color:#111;padding:6px 16px;font-size:1em;">Connexion</a>
+                <a href="/login/" class="nav-login-btn">Connexion</a>
             {% endif %}
         </div>
     </div>
+    <script>
+    (function() {
+        function setupDropdown(btnId, panelId) {
+            const btn = document.getElementById(btnId);
+            const panel = document.getElementById(panelId);
+            if (!btn || !panel) return;
+            btn.addEventListener('click', function(e) {
+                e.stopPropagation();
+                const open = panel.hidden;
+                document.querySelectorAll('.nav-dropdown-panel').forEach(function(p) {
+                    p.hidden = true;
+                });
+                document.querySelectorAll('.nav-dropdown-btn, .nav-menu-btn').forEach(function(b) {
+                    b.setAttribute('aria-expanded', 'false');
+                });
+                if (open) {
+                    panel.hidden = false;
+                    btn.setAttribute('aria-expanded', 'true');
+                }
+            });
+        }
+        setupDropdown('admin-menu-btn', 'admin-menu-dropdown');
+        setupDropdown('user-menu-btn', 'user-menu-dropdown');
+        document.addEventListener('click', function() {
+            document.querySelectorAll('.nav-dropdown-panel').forEach(function(p) {
+                p.hidden = true;
+            });
+            document.querySelectorAll('.nav-dropdown-btn, .nav-menu-btn').forEach(function(b) {
+                b.setAttribute('aria-expanded', 'false');
+            });
+        });
+    })();
+    </script>
     <div class="content">
         {% block content %}{% endblock %}
     </div>

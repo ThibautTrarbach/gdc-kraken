@@ -2,10 +2,126 @@
 {% load dict_extras split_filters %}
 {% block title %}Liste des missions - GDC Storm{% endblock %}
 {% block content %}
-<div class="missions-container" style="max-width:1500px;margin:35px auto 0 auto;padding:0 32px 32px 32px;border-radius:18px;background:#fff;box-shadow:0 2px 16px #0002;">
-    <div style="display:flex;justify-content:space-between;align-items:center;">
+<style>
+.missions-list-page .missions-table-scroll {
+    width: 100%;
+    overflow-x: auto;
+    -webkit-overflow-scrolling: touch;
+}
+.missions-list-page .missions-table [data-col].col-hidden {
+    display: none !important;
+}
+.missions-list-page .col-toggle-wrap {
+    position: relative;
+}
+.missions-list-page .columns-menu {
+    position: absolute;
+    right: 0;
+    top: calc(100% + 6px);
+    z-index: 40;
+    width: 280px;
+    padding: 12px;
+    background: #fff;
+    border: 1px solid #d0d7de;
+    border-radius: 10px;
+    box-shadow: 0 8px 24px rgba(0, 0, 0, 0.14);
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 4px 10px;
+}
+.missions-list-page .columns-menu[hidden] {
+    display: none !important;
+}
+.missions-list-page .columns-menu-title {
+    grid-column: 1 / -1;
+    font-size: 0.8em;
+    font-weight: 600;
+    color: #607d8b;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+    margin-bottom: 4px;
+    padding-bottom: 6px;
+    border-bottom: 1px solid #e8eef2;
+}
+.missions-list-page .columns-menu label {
+    display: flex !important;
+    flex-direction: row !important;
+    align-items: center;
+    gap: 8px;
+    margin: 0;
+    padding: 6px 4px;
+    font-size: 0.92em;
+    font-weight: 500;
+    color: #31415a;
+    cursor: pointer;
+    white-space: nowrap;
+    border-radius: 6px;
+}
+.missions-list-page .columns-menu label:hover {
+    background: #f4f7fa;
+}
+.missions-list-page .columns-menu label.is-locked {
+    opacity: 0.5;
+    cursor: default;
+}
+.missions-list-page .columns-menu label.is-locked:hover {
+    background: transparent;
+}
+.missions-list-page .columns-menu input[type="checkbox"] {
+    display: inline-block !important;
+    width: 15px !important;
+    height: 15px !important;
+    min-width: 15px !important;
+    max-width: 15px !important;
+    margin: 0 !important;
+    padding: 0 !important;
+    border: 1px solid #90a4ae !important;
+    border-radius: 3px !important;
+    background: #fff !important;
+    accent-color: #1976d2;
+    flex-shrink: 0;
+    cursor: pointer;
+}
+.missions-list-page .col-jouee {
+    text-align: center;
+    white-space: nowrap;
+}
+@media (max-width: 900px) {
+    .missions-list-page {
+        padding-left: 12px !important;
+        padding-right: 12px !important;
+    }
+    .missions-list-page .missions-title {
+        font-size: 1.5em !important;
+    }
+    .missions-list-page .columns-menu {
+        width: min(280px, calc(100vw - 40px));
+        grid-template-columns: 1fr;
+    }
+}
+</style>
+<div class="missions-container missions-list-page" style="max-width:1500px;margin:35px auto 0 auto;padding:0 32px 32px 32px;border-radius:18px;background:#fff;box-shadow:0 2px 16px #0002;">
+    <div class="missions-list-toolbar" style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:10px;">
         <div class="missions-title" style="font-size:2.1em;font-weight:700;margin-top:12px;">Liste des missions</div>
-        <button id="toggle-filters" onclick="toggleFilters()" class="home-btn" style="background:#1976d2;color:#fff;padding:7px 22px;font-size:1em;margin-right:8px;box-shadow:0 2px 8px #0001;border-radius:8px;">Filtres</button>
+        <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;position:relative;">
+            <div class="col-toggle-wrap">
+                <button type="button" id="toggle-columns" onclick="toggleColumnsMenu(event)" class="home-btn" style="background:#455a64;color:#fff;padding:7px 22px;font-size:1em;box-shadow:0 2px 8px #0001;border-radius:8px;">Colonnes ▾</button>
+                <div id="columns-menu" class="columns-menu" hidden>
+                    <div class="columns-menu-title">Afficher les colonnes</div>
+                    <label><input type="checkbox" data-col-toggle="type"> Type</label>
+                    <label class="is-locked"><input type="checkbox" data-col-toggle="nom" checked disabled> Nom</label>
+                    <label><input type="checkbox" data-col-toggle="carte" checked> Carte</label>
+                    <label><input type="checkbox" data-col-toggle="auteur" checked> Auteur(s)</label>
+                    <label><input type="checkbox" data-col-toggle="version"> Version</label>
+                    <label><input type="checkbox" data-col-toggle="date"> Date pub.</label>
+                    <label><input type="checkbox" data-col-toggle="statut" checked> Statut</label>
+                    <label><input type="checkbox" data-col-toggle="joueurs" checked> Min / Max</label>
+                    <label><input type="checkbox" data-col-toggle="jouee" checked> Sessions</label>
+                    <label><input type="checkbox" data-col-toggle="derniere" checked> Dernière fois</label>
+                </div>
+            </div>
+            <button type="button" id="toggle-filters" onclick="toggleFilters()" class="home-btn" style="background:#1976d2;color:#fff;padding:7px 22px;font-size:1em;box-shadow:0 2px 8px #0001;border-radius:8px;">Filtres</button>
+        </div>
     </div>
     {% if messages %}
         {% for message in messages %}
@@ -15,10 +131,11 @@
         {% endfor %}
     {% endif %}
     {% if missions %}
-    <table style="width:100%;table-layout:auto;">
+    <div class="missions-table-scroll">
+    <table class="missions-table" style="width:100%;table-layout:auto;">
         <thead style="vertical-align:top;">
             <tr>
-                <th style="white-space:nowrap;vertical-align:top;">
+                <th class="col-type" data-col="type" style="white-space:nowrap;vertical-align:top;">
                     <a href="#" onclick="setSort('type');return false;" style="text-decoration:none;color:inherit;">
                         Type
                         {% if sort == 'type' %}
@@ -28,7 +145,7 @@
                         {% endif %}
                     </a><br><input type="text" id="filter-type" class="filter-input" style="width:90%;font-size:0.95em;display:none;margin-top:4px;" placeholder="Filtrer..." oninput="scheduleFilterTable()">
                 </th>
-                <th style="white-space:nowrap;vertical-align:top;">
+                <th class="col-nom" data-col="nom" style="white-space:nowrap;vertical-align:top;">
                     <a href="#" onclick="setSort('nom');return false;" style="text-decoration:none;color:inherit;">
                         Nom
                         {% if sort == 'nom' %}
@@ -38,7 +155,7 @@
                         {% endif %}
                     </a><br><input type="text" id="filter-nom" class="filter-input" style="width:90%;font-size:0.95em;display:none;margin-top:4px;" placeholder="Filtrer..." oninput="scheduleFilterTable()">
                 </th>
-                <th style="white-space:nowrap;vertical-align:top;">
+                <th class="col-carte" data-col="carte" style="white-space:nowrap;vertical-align:top;">
                     <a href="#" onclick="setSort('carte');return false;" style="text-decoration:none;color:inherit;">
                         Carte
                         {% if sort == 'carte' %}
@@ -48,7 +165,7 @@
                         {% endif %}
                     </a><br><input type="text" id="filter-carte" class="filter-input" style="width:90%;font-size:0.95em;display:none;margin-top:4px;" placeholder="Filtrer..." oninput="scheduleFilterTable()">
                 </th>
-                <th style="white-space:nowrap;vertical-align:top;">
+                <th class="col-auteur" data-col="auteur" style="white-space:nowrap;vertical-align:top;">
                     <a href="#" onclick="setSort('auteur');return false;" style="text-decoration:none;color:inherit;">
                         Auteur(s)
                         {% if sort == 'auteur' %}
@@ -58,8 +175,8 @@
                         {% endif %}
                     </a><br><input type="text" id="filter-auteur" class="filter-input" style="width:90%;font-size:0.95em;display:none;margin-top:4px;" placeholder="Filtrer..." oninput="scheduleFilterTable()">
                 </th>
-                <th style="white-space:nowrap;vertical-align:top;">Version</th>
-                <th style="white-space:nowrap;vertical-align:top;">
+                <th class="col-version" data-col="version" style="white-space:nowrap;vertical-align:top;">Version</th>
+                <th class="col-date" data-col="date" style="white-space:nowrap;vertical-align:top;">
                     <a href="#" onclick="setSort('date');return false;" style="text-decoration:none;color:inherit;">
                         Date de publication
                         {% if sort == 'date' %}
@@ -69,7 +186,7 @@
                         {% endif %}
                     </a>
                 </th>
-                <th style="white-space:nowrap;vertical-align:top;">
+                <th class="col-statut" data-col="statut" style="white-space:nowrap;vertical-align:top;">
                     <a href="#" onclick="setSort('statut');return false;" style="text-decoration:none;color:inherit;">
                         Statut
                         {% if sort == 'statut' %}
@@ -79,29 +196,30 @@
                         {% endif %}
                     </a><br><input type="text" id="filter-statut" class="filter-input" style="width:90%;font-size:0.95em;display:none;margin-top:4px;" placeholder="Filtrer..." oninput="scheduleFilterTable()">
                 </th>
-                <th style="white-space:nowrap;vertical-align:top;">
-                    <a href="?sort=min&order={% if sort == 'min' and order == 'asc' %}desc{% else %}asc{% endif %}" style="text-decoration:none;color:inherit;">
-                        Min
-                        {% if sort == 'min' %}
-                            {% if order == 'asc' %}<span style="color:#222;">▲</span>{% else %}<span style="color:#222;">▼</span>{% endif %}
-                        {% else %}
-                            <span style="color:#bbb;">▲</span>
-                        {% endif %}
-                    </a><br><input type="number" id="filter-joueurs" class="filter-input" style="width:90%;font-size:0.95em;display:none;margin-top:4px;" placeholder="Nb joueurs..." min="1" oninput="scheduleFilterTable()">
+                <th class="col-joueurs" data-col="joueurs" colspan="2" style="white-space:nowrap;vertical-align:top;text-align:center;min-width:110px;">
+                    <div style="display:flex;justify-content:space-around;gap:8px;">
+                        <a href="?sort=min&order={% if sort == 'min' and order == 'asc' %}desc{% else %}asc{% endif %}" style="text-decoration:none;color:inherit;">
+                            Min
+                            {% if sort == 'min' %}
+                                {% if order == 'asc' %}<span style="color:#222;">▲</span>{% else %}<span style="color:#222;">▼</span>{% endif %}
+                            {% else %}
+                                <span style="color:#bbb;">▲</span>
+                            {% endif %}
+                        </a>
+                        <a href="?sort=max&order={% if sort == 'max' and order == 'asc' %}desc{% else %}asc{% endif %}" style="text-decoration:none;color:inherit;">
+                            Max
+                            {% if sort == 'max' %}
+                                {% if order == 'asc' %}<span style="color:#222;">▲</span>{% else %}<span style="color:#222;">▼</span>{% endif %}
+                            {% else %}
+                                <span style="color:#bbb;">▲</span>
+                            {% endif %}
+                        </a>
+                    </div>
+                    <input type="number" id="filter-joueurs" class="filter-input" style="width:94%;font-size:0.95em;display:none;margin-top:4px;" placeholder="Nb joueurs..." min="1" oninput="scheduleFilterTable()">
                 </th>
-                <th style="white-space:nowrap;vertical-align:top;">
-                    <a href="?sort=max&order={% if sort == 'max' and order == 'asc' %}desc{% else %}asc{% endif %}" style="text-decoration:none;color:inherit;">
-                        Max
-                        {% if sort == 'max' %}
-                            {% if order == 'asc' %}<span style="color:#222;">▲</span>{% else %}<span style="color:#222;">▼</span>{% endif %}
-                        {% else %}
-                            <span style="color:#bbb;">▲</span>
-                        {% endif %}
-                    </a>
-                </th>
-                <th style="white-space:nowrap;vertical-align:top;">
-                    <a href="#" onclick="setSort('jouee');return false;" style="text-decoration:none;color:inherit;">
-                        Jouée (nb)
+                <th class="col-jouee" data-col="jouee" style="white-space:nowrap;vertical-align:top;text-align:center;padding-left:6px;padding-right:6px;">
+                    <a href="#" onclick="setSort('jouee');return false;" style="text-decoration:none;color:inherit;" title="Nombre de sessions">
+                        Sessions
                         {% if sort == 'jouee' %}
                             {% if order == 'asc' %}<span style="color:#222;">▲</span>{% else %}<span style="color:#222;">▼</span>{% endif %}
                         {% else %}
@@ -109,7 +227,7 @@
                         {% endif %}
                     </a>
                 </th>
-                <th style="white-space:nowrap;vertical-align:top;">
+                <th class="col-derniere" data-col="derniere" style="white-space:nowrap;vertical-align:top;">
                     <a href="#" onclick="setSort('derniere');return false;" style="text-decoration:none;color:inherit;">
                         Dernière fois
                         {% if sort == 'derniere' %}
@@ -125,7 +243,7 @@
                 {% for mission in missions %}
                         {% with map_display=map_displays|get_item:mission.id %}
                         <tr class="{% if mission.status == 'JOUABLE' %}mission-row-jouable{% elif mission.status == 'NON_JOUABLE' %}mission-row-non-jouable{% elif mission.status == 'INCONNU' %}mission-row-inconnu{% elif mission.status == 'SUPPRIMEE' %}mission-row-supprimee{% endif %}"
-                            style="white-space:nowrap;overflow-x:auto;"
+                            style="white-space:nowrap;"
                             data-type="{{ mission.get_type_display|lower }}"
                             data-nom="{{ mission.name|lower }}"
                             data-carte="{{ map_display|lower }}"
@@ -133,28 +251,25 @@
                             data-statut="{{ mission.get_status_display|lower }}"
                             data-min="{% if mission.min_players %}{{ mission.min_players }}{% else %}0{% endif %}"
                             data-max="{{ mission.max_players }}">
-                                <td>{{ mission.get_type_display }}</td>
-                                <td style="white-space:nowrap;overflow-x:auto;max-width:300px;">
-                                        <a href="{% url 'mission_detail' mission.id %}" style="color:#1976d2;font-weight:600;text-decoration:underline;">{{ mission.name }}</a>
-                                        {% if mission.pbo_missing %}
-                                        <span style="display:inline-block;margin-left:8px;padding:2px 8px;border-radius:6px;background:#ffeaea;color:#b71c1c;font-weight:700;font-size:0.8em;">PBO manquant</span>
-                                        {% endif %}
+                                <td class="col-type" data-col="type">{{ mission.get_type_display }}</td>
+                                <td class="col-nom" data-col="nom" style="white-space:nowrap;overflow-x:auto;max-width:300px;" title="{{ mission.name }}">
+                                        <a href="{% url 'mission_detail' mission.id %}" style="color:#1976d2;font-weight:600;text-decoration:underline;">{{ mission.name|mission_short_name }}</a>
                                 </td>
-                                <td>{{ map_display }}</td>
-                                <td style="max-width:120px;word-break:break-word;white-space:normal;">
+                                <td class="col-carte" data-col="carte">{{ map_display }}</td>
+                                <td class="col-auteur" data-col="auteur" style="max-width:120px;word-break:break-word;white-space:normal;">
                                     {% if mission_authors_display|get_item:mission.id %}
                                         {% for author in mission_authors_display|get_item:mission.id|split:"," %}
                                             {{ author }}{% if not forloop.last %},<br>{% endif %}
                                         {% endfor %}
                                     {% endif %}
                                 </td>
-                                <td>{{ mission.version }}</td>
-                                <td>{{ mission.publication_date|date:'d/m/Y' }}</td>
-                                <td>{{ mission.get_status_display }}</td>
-                                <td>{% if mission.min_players %}{{ mission.min_players }}{% else %}-{% endif %}</td>
-                                <td>{{ mission.max_players }}</td>
-                                <td>{{ mission.played_count|default:0 }}</td>
-                                <td>
+                                <td class="col-version" data-col="version">{{ mission.version }}</td>
+                                <td class="col-date" data-col="date">{{ mission.publication_date|date:'d/m/Y' }}</td>
+                                <td class="col-statut" data-col="statut">{{ mission.get_status_display }}</td>
+                                <td class="col-joueurs" data-col="joueurs">{% if mission.min_players %}{{ mission.min_players }}{% else %}-{% endif %}</td>
+                                <td class="col-joueurs" data-col="joueurs">{{ mission.max_players }}</td>
+                                <td class="col-jouee" data-col="jouee" style="text-align:center;padding-left:6px;padding-right:6px;">{{ mission.played_count|default:0 }}</td>
+                                <td class="col-derniere" data-col="derniere">
                                     {% if mission.last_played_at %}
                                         {{ mission.last_played_at|date:'d/m/Y' }}
                                     {% else %}
@@ -166,24 +281,82 @@
         {% endfor %}
         </tbody>
     </table>
+    </div>
     <script>
+    const COL_STORAGE_KEY = 'missionListVisibleCols';
+    const DEFAULT_HIDDEN_COLS = ['type', 'version', 'date'];
+    const ALL_COLS = ['type', 'nom', 'carte', 'auteur', 'version', 'date', 'statut', 'joueurs', 'jouee', 'derniere'];
+
+    function getVisibleCols() {
+        try {
+            const raw = localStorage.getItem(COL_STORAGE_KEY);
+            if (raw) {
+                const parsed = JSON.parse(raw);
+                if (Array.isArray(parsed) && parsed.length) return parsed;
+            }
+        } catch (e) {}
+        return ALL_COLS.filter(c => !DEFAULT_HIDDEN_COLS.includes(c));
+    }
+
+    function saveVisibleCols(cols) {
+        localStorage.setItem(COL_STORAGE_KEY, JSON.stringify(cols));
+    }
+
+    function applyColumnVisibility(cols) {
+        const visible = new Set(cols);
+        document.querySelectorAll('[data-col]').forEach(el => {
+            const col = el.getAttribute('data-col');
+            el.classList.toggle('col-hidden', !visible.has(col));
+        });
+        document.querySelectorAll('[data-col-toggle]').forEach(input => {
+            const col = input.getAttribute('data-col-toggle');
+            if (!input.disabled) {
+                input.checked = visible.has(col);
+            }
+        });
+    }
+
+    function toggleColumnsMenu(event) {
+        if (event) event.stopPropagation();
+        const menu = document.getElementById('columns-menu');
+        menu.hidden = !menu.hidden;
+    }
+
+    document.addEventListener('click', function(e) {
+        const wrap = document.querySelector('.col-toggle-wrap');
+        const menu = document.getElementById('columns-menu');
+        if (!wrap || !menu || menu.hidden) return;
+        if (!wrap.contains(e.target)) {
+            menu.hidden = true;
+        }
+    });
+
+    document.querySelectorAll('[data-col-toggle]').forEach(input => {
+        input.addEventListener('change', function() {
+            const cols = [];
+            document.querySelectorAll('[data-col-toggle]').forEach(cb => {
+                if (cb.checked) cols.push(cb.getAttribute('data-col-toggle'));
+            });
+            if (!cols.includes('nom')) cols.unshift('nom');
+            saveVisibleCols(cols);
+            applyColumnVisibility(cols);
+        });
+    });
+
+    applyColumnVisibility(getVisibleCols());
+
     function toggleFilters() {
-        // Get current URL params
         const params = new URLSearchParams(window.location.search);
         const filters = document.querySelectorAll('.filter-input');
         const filtersVisible = params.get('show_filters') === '1';
         if (filtersVisible) {
-            // Hide filters: remove param and hide fields
             params.delete('show_filters');
             filters.forEach(input => input.style.display = 'none');
         } else {
-            // Show filters: add param and show fields
             params.set('show_filters', '1');
             filters.forEach(input => input.style.display = '');
-            // Focus first filter
             if (filters.length > 0) filters[0].focus();
         }
-        // Update URL without reloading (for toggle only)
         window.history.replaceState({}, '', `${window.location.pathname}?${params}`);
     }
     let filterTimer = null;
@@ -223,7 +396,6 @@
         filterTimer = setTimeout(filterTable, 120);
     }
     function setSort(col) {
-        // Récupère les filtres actifs
         const filters = {
             type: document.getElementById('filter-type').value,
             nom: document.getElementById('filter-nom').value,
@@ -232,26 +404,22 @@
             statut: document.getElementById('filter-statut').value,
             joueurs: document.getElementById('filter-joueurs').value
         };
-        // Détermine l'ordre
         let currentSort = '{{ sort|escapejs }}';
         let currentOrder = '{{ order|escapejs }}';
         let order = 'asc';
         if (currentSort === col && currentOrder === 'asc') order = 'desc';
-        // Construit l'URL avec les filtres en query string
         let url = `?sort=${col}&order=${order}`;
         Object.keys(filters).forEach(key => {
             if (filters[key]) {
                 url += `&filter_${key}=${encodeURIComponent(filters[key])}`;
             }
         });
-        // Preserve show_filters if visible
         const filtersVisible = Array.from(document.querySelectorAll('.filter-input')).some(input => input.style.display !== 'none');
         if (filtersVisible) {
             url += '&show_filters=1';
         }
         window.location = url;
     }
-    // À l'arrivée sur la page, si des filtres sont présents dans l'URL, les appliquer dans les champs
     (function() {
         const params = new URLSearchParams(window.location.search);
         const filters = document.querySelectorAll('.filter-input');
@@ -263,7 +431,6 @@
                 anyFilter = true;
             }
         });
-        // Afficher les champs filtres si show_filters=1, ou si un filtre est présent
         if (params.get('show_filters') === '1' || anyFilter) {
             filters.forEach(input => input.style.display = '');
         } else {
