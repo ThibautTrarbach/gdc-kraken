@@ -70,9 +70,14 @@ CSRF_TRUSTED_ORIGINS = [
 ]
 
 # Derrière un reverse-proxy (Traefik, nginx, Cloudflare…)
-USE_X_FORWARDED_HOST = _env_bool("USE_X_FORWARDED_HOST", False)
-if _env_bool("USE_X_FORWARDED_PROTO", False):
+# Activé par défaut en DOCKER/PROD ; override via env si besoin.
+_PROXY_DEFAULT = PLATFORM in ("DOCKER", "PROD")
+USE_X_FORWARDED_HOST = _env_bool("USE_X_FORWARDED_HOST", _PROXY_DEFAULT)
+USE_X_FORWARDED_PROTO = _env_bool("USE_X_FORWARDED_PROTO", _PROXY_DEFAULT)
+if USE_X_FORWARDED_PROTO:
     SECURE_PROXY_SSL_HEADER = ("HTTP_X_FORWARDED_PROTO", "https")
+    SESSION_COOKIE_SECURE = True
+    CSRF_COOKIE_SECURE = True
 
 
 # Application definition
@@ -227,6 +232,8 @@ SOCIALACCOUNT_ADAPTER = 'gdc_storm.adapters.SocialAccountAdapter'
 ACCOUNT_LOGIN_METHODS = {'username'}
 ACCOUNT_SIGNUP_FIELDS = ['username*', 'password1*', 'password2*']
 ACCOUNT_EMAIL_VERIFICATION = 'none'
+if USE_X_FORWARDED_PROTO:
+    ACCOUNT_DEFAULT_HTTP_PROTOCOL = "https"
 SOCIALACCOUNT_EMAIL_REQUIRED = False
 SOCIALACCOUNT_EMAIL_VERIFICATION = 'none'
 SOCIALACCOUNT_AUTO_SIGNUP = True
