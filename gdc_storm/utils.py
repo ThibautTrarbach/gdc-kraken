@@ -1,7 +1,16 @@
 # Fonctions utilitaires
 import re
 
+from django.core.cache import cache
+
 from .models import Mission
+
+SESSION_LIST_CACHE_KEY = 'session_list_data_v1'
+
+
+def invalidate_session_list_cache():
+    """Invalide le cache de la liste des sessions après toute mutation."""
+    cache.delete(SESSION_LIST_CACHE_KEY)
 
 
 def strip_mission_version(mission_name):

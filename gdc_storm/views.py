@@ -145,13 +145,13 @@ from collections import defaultdict
 import secrets
 
 from django.core.cache import cache
+from django.db import IntegrityError
 from django.db.models import Count, Max, Q
 from django.shortcuts import render, get_object_or_404, redirect
 from django.http import HttpResponse, JsonResponse
 from django.urls import reverse
 from django.core.files.storage import default_storage
 from django.views.decorators.http import require_POST, require_http_methods
-from django.views.decorators.csrf import csrf_exempt
 from django.contrib.auth.decorators import login_required, user_passes_test
 from django.contrib import messages
 from django.contrib.auth.models import Group, User
@@ -193,7 +193,12 @@ def get_recup_user():
 from .models import Mission, MapName, Player, GameSession, GameSessionPlayer, ApiToken
 from .models import LegacyRole, LegacyMission, LegacyImportError, LegacyGameSession, LegacyMapNames, LegacyGameSessionPlayerRole, LegacyPlayers
 from .forms import MissionStatusForm
-from gdc_storm.utils import parse_mission_filename, recup_parse_mission_filename
+from gdc_storm.utils import (
+    parse_mission_filename,
+    recup_parse_mission_filename,
+    invalidate_session_list_cache,
+    SESSION_LIST_CACHE_KEY,
+)
 from gdc_storm.pbo_extract import is_sqm_binarized, extract_mission_data_from_pbo, extract_briefing_from_pbo
 
 
@@ -938,7 +943,9 @@ def upload_commit(request):
 
 @login_required
 def recup_missions(request):
-    """Page de récupération multi-PBO depuis le cache joueur (auth requise, tout utilisateur)."""
+    """Page de récupération multi-PBO depuis le cache joueur (Mission Maker requis)."""
+    if not user_is_mission_maker(request.user):
+        return HttpResponse("Vous n'avez pas le droit de récupérer une mission.", status=403)
     clean_temp_files(get_upload_temp_dir())
     return render(request, 'gdc_storm/recup_missions.html', {
         'max_files': UPLOAD_ANALYZE_MAX_FILES,
@@ -1067,6 +1074,8 @@ def scan_pbo_missing_apply(request):
 @require_POST
 def recup_analyze(request):
     """Analyse un ou plusieurs PBO pour la récupération (même logique doublons/versions que l'upload)."""
+    if not user_is_mission_maker(request.user):
+        return _mission_maker_forbidden_json()
     clean_temp_files(get_upload_temp_dir())
     files = list(request.FILES.getlist('pbo_files'))
     if not files:
@@ -1132,6 +1141,8 @@ def recup_analyze(request):
 @require_POST
 def recup_commit(request):
     """Commit récupération : création sous GDC-RECUP, update sans changer le propriétaire, validation soft."""
+    if not user_is_mission_maker(request.user):
+        return _mission_maker_forbidden_json()
     try:
         payload = json.loads(request.body.decode('utf-8'))
     except (json.JSONDecodeError, UnicodeDecodeError):
@@ -1373,13 +1384,7 @@ def mission_list(request):
         if order == 'desc':
             sort_field = '-' + sort_field
         missions = missions_qs.order_by(sort_field)
-    # Cache global pour les noms de map
-    MAP_CACHE_KEY = 'map_display_names_v1'
-    map_display_cache = cache.get(MAP_CACHE_KEY)
-    if not map_display_cache:
-        all_maps = MapName.objects.all()
-        map_display_cache = {m.code_name: m.display_name or m.code_name for m in all_maps}
-        cache.set(MAP_CACHE_KEY, map_display_cache, 3600)  # 1h
+    map_display_cache = get_map_display_cache()
     map_displays = {m.id: map_display_cache.get(m.map, m.map) for m in missions}
     full_names = {m.id: m.name for m in missions}
     # Prépare un mapping mission_id -> auteur à afficher
@@ -1515,9 +1520,10 @@ def user_profile(request, user_id):
     elif sort_pub == 'statut':
         missions = sorted(missions, key=lambda m: (m.status or '').lower(), reverse=reverse_pub)
     # --- Missions jouées ---
-    oldest_player = user_profile.players.order_by('created_at').first()
+    players_qs = user_profile.players.order_by('created_at')
+    oldest_player = players_qs.first()
     oldest_player_created = oldest_player.created_at if oldest_player else None
-    player_ids = list(user_profile.players.values_list('id', flat=True))
+    player_ids = list(players_qs.values_list('id', flat=True))
     gamesession_players = GameSessionPlayer.objects.filter(player_id__in=player_ids).select_related('session').order_by('-session__start_time')
     sessions_played = [gsp.session for gsp in gamesession_players]
     total_sessions_played = len(set(sessions_played))
@@ -1720,7 +1726,13 @@ def create_mission_from_pbo(
         briefing=briefing if briefing is not None else [],
     )
     # Mode récup : autorise temporairement les noms hors convention CPC
-    mission.save(skip_name_check=not strict)
+    try:
+        mission.save(skip_name_check=not strict)
+    except IntegrityError:
+        return None, (
+            "Une mission avec le même nom, carte et nombre de joueurs existe déjà "
+            "(création concurrente ou doublon)."
+        )
     # Stocke la liste des images de briefing pour suppression ultérieure
     if briefing_images:
         mission.briefing_images = briefing_images
@@ -1756,8 +1768,12 @@ def update_mission_from_pbo(
 ):
     is_admin = request.user.is_superuser
     is_owner = existing_mission.user == request.user
-    if not preserve_owner and not (is_admin or is_owner):
-        return None, "Vous n'avez pas le droit de mettre à jour cette mission (seul le propriétaire ou un admin peut le faire)."
+    is_mission_maker = user_is_mission_maker(request.user)
+    # preserve_owner : ne change pas le propriétaire (recup/scan), mais n'autorise pas le bypass.
+    # Autorisé : admin, propriétaire, ou Mission Maker en mode preserve_owner.
+    allowed = is_admin or is_owner or (preserve_owner and is_mission_maker)
+    if not allowed:
+        return None, "Vous n'avez pas le droit de mettre à jour cette mission (seul le propriétaire, un Mission Maker ou un admin peut le faire)."
     if not os.path.exists(temp_file_path):
         return None, "Fichier temporaire manquant ou expiré lors de la confirmation de mise à jour. Merci de recommencer l'upload."
     warnings = []
@@ -1897,7 +1913,7 @@ def player_list(request):
 def player_detail(request, player_id):
     player = get_object_or_404(Player, id=player_id)
     # Si le player est lié à un utilisateur, rediriger vers la page utilisateur
-    user = player.users.first() if player.users.count() > 0 else None
+    user = player.users.first()
     if user:
         return redirect(reverse('user_profile', args=[user.id]))
     # Tri dynamique
@@ -1990,8 +2006,7 @@ def player_mapping(request):
 
 def session_list(request):
     # defaultdict est importé en début de fichier
-    CACHE_KEY = 'session_list_data_v1'
-    cache_data = cache.get(CACHE_KEY)
+    cache_data = cache.get(SESSION_LIST_CACHE_KEY)
     sort = request.GET.get('sort', 'date')
     order = request.GET.get('order', 'desc')
     if cache_data:
@@ -2003,7 +2018,7 @@ def session_list(request):
         gsp_by_session = defaultdict(list)
         for gsp in all_gsp:
             gsp_by_session[gsp.session_id].append(gsp)
-        cache.set(CACHE_KEY, {'sessions': sessions, 'gsp_by_session': gsp_by_session}, 300)  # 5 min
+        cache.set(SESSION_LIST_CACHE_KEY, {'sessions': sessions, 'gsp_by_session': gsp_by_session}, 300)
 
     sort_fields = {
         'nom': 'name',
@@ -2012,23 +2027,24 @@ def session_list(request):
         'duration': 'end_time',
         'verdict': 'verdict',
     }
-    sort_field = sort_fields.get(sort, 'start_time')
     if sort == 'duration':
         sessions = list(sessions)
-        sessions.sort(key=lambda s: (s.end_time is not None, (s.end_time-s.start_time).total_seconds() if s.end_time else 0), reverse=(order=='desc'))
+        sessions.sort(
+            key=lambda s: (
+                s.end_time is not None,
+                (s.end_time - s.start_time).total_seconds() if s.end_time else 0,
+            ),
+            reverse=(order == 'desc'),
+        )
     else:
-        if order == 'desc':
-            sort_field = '-' + sort_field
-        sessions = sorted(sessions, key=lambda s: getattr(s, sort_fields.get(sort, 'start_time')), reverse=(order=='desc'))
+        attr = sort_fields.get(sort, 'start_time')
+        sessions = sorted(
+            sessions,
+            key=lambda s: getattr(s, attr),
+            reverse=(order == 'desc'),
+        )
 
-    # Cache global pour les noms de map
-    MAP_CACHE_KEY = 'map_display_names_v1'
-    map_display_cache = cache.get(MAP_CACHE_KEY)
-    if not map_display_cache:
-        # Récupère tous les MapName en une requête
-        all_maps = MapName.objects.all()
-        map_display_cache = {m.code_name: m.display_name or m.code_name for m in all_maps}
-        cache.set(MAP_CACHE_KEY, map_display_cache, 3600)  # 1h
+    map_display_cache = get_map_display_cache()
     map_displays = {}
     for session in sessions:
         code = session.map
@@ -2073,6 +2089,7 @@ def session_detail(request, session_id):
                 gsp.save()
                 updated += 1
         if updated:
+            invalidate_session_list_cache()
             messages.success(request, f"Statut de {updated} joueur(s) mis à jour.")
         else:
             messages.info(request, "Aucun changement de statut détecté.")
@@ -2095,6 +2112,7 @@ def session_detail(request, session_id):
             if verdict in dict(GameSession.VERDICT_CHOICES):
                 session.verdict = verdict
                 session.save()
+                invalidate_session_list_cache()
                 messages.success(request, "Verdict mis à jour.")
                 # Recalcul après changement (ex. INCONNU -> SUCCES retire le droit non-admin)
                 user_can_edit_verdict = request.user.is_authenticated and (
@@ -2149,6 +2167,7 @@ def session_detail(request, session_id):
                         if map_norm:
                             session.map = map_norm
                         session.save()
+                        invalidate_session_list_cache()
                         messages.success(request, "Mission associée avec succès à la session.")
                         return redirect('session_detail', session_id=session.id)
                     except Mission.DoesNotExist:

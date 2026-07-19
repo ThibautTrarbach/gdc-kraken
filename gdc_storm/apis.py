@@ -5,18 +5,18 @@ from django.http import JsonResponse
 from .models import GameSession, GameSessionPlayer, Player
 from functools import wraps
 from .models import ApiToken
-from .utils import find_mission_for_session
+from .utils import find_mission_for_session, invalidate_session_list_cache
 import json
 
 
 def require_api_token(view_func):
     @wraps(view_func)
     def _wrapped_view(request, *args, **kwargs):
-        token = request.headers.get('Authorization') or request.GET.get('api_token')
+        token = request.headers.get('Authorization')
         if not token:
             return JsonResponse({'success': False, 'error': 'Token manquant.'}, status=401)
         try:
-            api_token = ApiToken.objects.get(key=token, is_active=True)
+            ApiToken.objects.get(key=token, is_active=True)
         except ApiToken.DoesNotExist:
             return JsonResponse({'success': False, 'error': 'Token invalide.'}, status=403)
         return view_func(request, *args, **kwargs)
@@ -48,6 +48,10 @@ def api_create_gamesession(request):
     mission_name = data.get('mission_name')
     map_name = data.get('map')
     start_time = data.get('start_time')
+    if not mission_name or not str(mission_name).strip():
+        return JsonResponse({'success': False, 'error': 'mission_name requis'}, status=400)
+    if not map_name or not str(map_name).strip():
+        return JsonResponse({'success': False, 'error': 'map requis'}, status=400)
     mission, mission_name_no_version, version, map_normalized = find_mission_for_session(
         mission_name, map_name
     )
@@ -61,6 +65,7 @@ def api_create_gamesession(request):
         version=version,
         start_time=start_dt
     )
+    invalidate_session_list_cache()
     return JsonResponse({'success': True, 'session_id': session.id, 'mission_found': bool(mission)})
 
 
@@ -79,6 +84,7 @@ def api_update_gamesession_end(request, session_id):
         session = GameSession.objects.get(id=session_id)
         session.end_time = end_dt
         session.save()
+        invalidate_session_list_cache()
         return JsonResponse({'success': True})
     except GameSession.DoesNotExist:
         return JsonResponse({'success': False, 'error': 'GameSession introuvable'}, status=404)
@@ -101,6 +107,7 @@ def api_add_gamesession_player(request, session_id):
         return JsonResponse({'success': False, 'error': 'GameSession introuvable'}, status=404)
     player_obj, _ = Player.objects.get_or_create(name=player_name)
     gsp = GameSessionPlayer.objects.create(session=session, player=player_obj, role=role)
+    invalidate_session_list_cache()
     return JsonResponse({'success': True, 'player_id': gsp.id, 'player_db_id': player_obj.id})
 
 
@@ -121,10 +128,16 @@ def api_update_gamesession_player_status(request, session_id):
         player = Player.objects.get(name=player_name)
     except Player.DoesNotExist:
         return JsonResponse({'success': False, 'error': 'Player introuvable'}, status=404)
+    except Player.MultipleObjectsReturned:
+        return JsonResponse(
+            {'success': False, 'error': 'Plusieurs joueurs portent ce nom ; données incohérentes.'},
+            status=409,
+        )
     try:
         gsp = GameSessionPlayer.objects.get(player=player, session_id=session_id)
         gsp.status = status
         gsp.save()
+        invalidate_session_list_cache()
         return JsonResponse({'success': True})
     except GameSessionPlayer.DoesNotExist:
         return JsonResponse({'success': False, 'error': 'GameSessionPlayer introuvable'}, status=404)

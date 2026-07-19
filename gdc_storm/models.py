@@ -71,7 +71,7 @@ class Mission(models.Model):
         skip_name_check = kwargs.pop('skip_name_check', False) or getattr(self, '_skip_name_check', False)
         if not skip_name_check:
             allowed_types = '|'.join([choice[0] for choice in Mission.TYPE_CHOICES])
-            pattern = rf"^CPC-(?:{allowed_types})\[\d{{2,3}}\]-[\w\d\s\-\_\(\)@#%&'éèàùâêîôÛäëïöüçÉÈÀÙÂÊÎÔÛÄËÏÖÜÇ]+$"
+            pattern = rf"^CPC-(?:{allowed_types})\[\d{{2,3}}\]-[\w\d\s\-\_\(\)@#%&'éèàùâêîôûäëïöüçÉÈÀÙÂÊÎÔÛÄËÏÖÜÇ]+$"
             if not re.match(pattern, self.name):
                 raise ValueError("Le champ 'name' doit être au format complet : CPC-YY[XX]-NomMission")
         if self.pk is not None:
@@ -84,14 +84,32 @@ class Mission(models.Model):
                 )
                 if orig_status is not None and orig_status != self.status:
                     self.last_status_update = timezone.now()
+                    # Si update_fields est fourni, Django n'écrit que ces colonnes :
+                    # inclure last_status_update sinon le timestamp est perdu.
+                    if update_fields is not None:
+                        kwargs['update_fields'] = list(
+                            dict.fromkeys([*update_fields, 'last_status_update'])
+                        )
         else:
             self.last_status_update = timezone.now()
+            update_fields = kwargs.get('update_fields')
+            if update_fields is not None and 'last_status_update' not in update_fields:
+                kwargs['update_fields'] = list(
+                    dict.fromkeys([*update_fields, 'last_status_update'])
+                )
         super().save(*args, **kwargs)
 
     class Meta:
+        constraints = [
+            models.UniqueConstraint(
+                fields=['name', 'map', 'max_players'],
+                name='mission_name_map_max_players_uniq',
+            ),
+        ]
         indexes = [
             models.Index(fields=['map', 'name'], name='mission_map_name_idx'),
             models.Index(fields=['map'], name='mission_map_idx'),
+            models.Index(fields=['name'], name='mission_name_idx'),
             models.Index(fields=['pbo_missing'], name='mission_pbo_missing_idx'),
         ]
 
@@ -104,7 +122,7 @@ class MapName(models.Model):
         return self.display_name
 
 class Player(models.Model):
-    name = models.CharField(max_length=255, verbose_name='Nom du joueur')
+    name = models.CharField(max_length=255, unique=True, verbose_name='Nom du joueur')
     # Update this after legacy importation!
     created_at = models.DateTimeField(auto_now_add=True, verbose_name='Date de création')
     #created_at = models.DateTimeField(verbose_name='Date de création')
@@ -112,11 +130,6 @@ class Player(models.Model):
 
     def __str__(self):
         return self.name
-
-    class Meta:
-        indexes = [
-            models.Index(fields=['name'], name='player_name_idx'),
-        ]
 
 class GameSession(models.Model):
     mission = models.ForeignKey('Mission', null=True, blank=True, on_delete=models.SET_NULL, related_name='game_sessions')

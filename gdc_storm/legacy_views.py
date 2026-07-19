@@ -1,4 +1,3 @@
-from django.views.decorators.csrf import csrf_exempt
 from django.db import transaction
 
 from gdc_storm.models import LegacyRole
@@ -17,7 +16,6 @@ from yapbol import PBOFile
 import re
 from django.contrib.auth.models import User, Group
 from django.views.decorators.http import require_POST
-from django.views.decorators.csrf import csrf_exempt
 from django.contrib.admin.views.decorators import staff_member_required
 
 import logging
@@ -212,32 +210,32 @@ def export_legacy_missions_to_main(request):
     errors = []
     for legacy in missions:
         try:
-            # Empêche les doublons dans Mission
-            if Mission.objects.filter(name=legacy.name, map=legacy.map).exists():
-                errors.append(f"Mission déjà existante : {legacy.name} ({legacy.map})")
-                continue
-                # Crée l'entrée MapName si nécessaire (comme upload_mission)
-                #from gdc_storm.models import MapName
-                #MapName.objects.get_or_create(code_name=legacy.map, defaults={'display_name': ''})
-            mission = Mission.objects.create(
-                name=legacy.name,
-                user=user,
-                authors=legacy.authors,
-                min_players=legacy.min_players,
-                max_players=legacy.max_players,
-                type=legacy.type,
-                version=legacy.version,
-                map=legacy.map,
-                onLoadMission=legacy.onLoadMission,
-                overviewText=legacy.overviewText,
-                loadScreen=legacy.loadScreen,
-                briefing=legacy.briefing,
-                briefing_images=legacy.briefing_images,
-                status=Mission.STATUS_INCONNU,
-            )
-            legacy.pbo_file.delete()
-            legacy.delete()
-            count += 1
+            with transaction.atomic():
+                if Mission.objects.filter(name=legacy.name, map=legacy.map).exists():
+                    errors.append(f"Mission déjà existante : {legacy.name} ({legacy.map})")
+                    continue
+                MapName.objects.get_or_create(
+                    code_name=legacy.map, defaults={'display_name': ''}
+                )
+                mission = Mission.objects.create(
+                    name=legacy.name,
+                    user=user,
+                    authors=legacy.authors,
+                    min_players=legacy.min_players,
+                    max_players=legacy.max_players,
+                    type=legacy.type,
+                    version=legacy.version,
+                    map=legacy.map,
+                    onLoadMission=legacy.onLoadMission,
+                    overviewText=legacy.overviewText,
+                    loadScreen=legacy.loadScreen,
+                    briefing=legacy.briefing,
+                    briefing_images=legacy.briefing_images,
+                    status=Mission.STATUS_INCONNU,
+                )
+                legacy.pbo_file.delete()
+                legacy.delete()
+                count += 1
         except Exception as e:
             errors.append(f"Erreur sur {legacy.name} ({legacy.map}, v{legacy.version}) : {e}")
     msg = f"{count} mission(s) exportée(s) vers la DB principale."
@@ -267,7 +265,6 @@ def delete_legacy_import_error(request):
 
 @require_POST
 @staff_member_required
-@csrf_exempt
 def import_players_csv(request):
     if 'csv_file' not in request.FILES:
         return JsonResponse({'success': False, 'error': 'Aucun fichier CSV fourni.'}, status=400)
@@ -285,12 +282,12 @@ def import_players_csv(request):
             errors.append(f"Pseudo manquant sur la ligne {row}")
             continue
         try:
-            player = Player(name=pseudo)
-            if date_creation:
+            player, was_created = Player.objects.get_or_create(name=pseudo)
+            if date_creation and was_created:
                 dt = parse_datetime(date_creation)
                 if dt:
-                    player.created_at = dt
-            player.save()
+                    Player.objects.filter(pk=player.pk).update(created_at=dt)
+                    player.refresh_from_db()
             # Ajout dans LegacyPlayers
             LegacyPlayers.objects.create(
                 legacy_id=int(legacy_id) if legacy_id and legacy_id.isdigit() else None,
@@ -298,7 +295,8 @@ def import_players_csv(request):
                 created_at=player.created_at,
                 raw_data=row
             )
-            created += 1
+            if was_created:
+                created += 1
         except Exception as e:
             errors.append(f"Erreur sur {pseudo}: {e}")
     msg = f"{created} joueur(s) importé(s)."
@@ -525,12 +523,25 @@ def import_gamesession_player_role_csv(request):
 
 @require_POST
 @staff_member_required
-@csrf_exempt
 def import_legacy_gamesessions(request):
-    from gdc_storm.models import LegacyGameSession, GameSession, Mission, LegacyGameSessionPlayerRole, LegacyPlayers, Player, LegacyRole, GameSessionPlayer, LegacyMapNames
-    legacy_sessions = LegacyGameSession.objects.all()
+    from gdc_storm.models import (
+        LegacyGameSession, GameSession, Mission, LegacyGameSessionPlayerRole,
+        LegacyPlayers, Player, LegacyRole, GameSessionPlayer, LegacyMapNames,
+    )
+    legacy_sessions = list(LegacyGameSession.objects.all())
     imported = 0
     errors = []
+
+    # Préchargements pour éviter le N+1
+    all_legacy_maps = list(LegacyMapNames.objects.all())
+    players_by_legacy_id = {
+        p.legacy_id: p for p in LegacyPlayers.objects.exclude(legacy_id=None)
+    }
+    roles_by_legacy_id = {
+        r.legacy_id: r for r in LegacyRole.objects.exclude(legacy_id=None)
+    }
+    players_by_name = {p.name: p for p in Player.objects.all()}
+
     for legacy in legacy_sessions:
         version = ''
         mission_name_no_version = legacy.name
@@ -538,9 +549,8 @@ def import_legacy_gamesessions(request):
         if version_match:
             version = version_match.group(1)
             mission_name_no_version = re.sub(r'-[Vv]\d+$', '', legacy.name)
-        
-        # Chercher la mission correspondante
-        mission = Mission.objects.filter(name__icontains=mission_name_no_version).first()
+
+        mission = Mission.objects.filter(name__iexact=mission_name_no_version).first()
         verdict_map = {
             'SUCCES': GameSession.VERDICT_SUCCES,
             'ECHEC': GameSession.VERDICT_ECHEC,
@@ -556,16 +566,17 @@ def import_legacy_gamesessions(request):
         if not verdict:
             errors.append(f"Verdict non reconnu pour session {legacy.session_id} : {legacy.verdict}")
             continue
-        # Trouver le code_name de la map
         map_matches = []
-        for lmap in LegacyMapNames.objects.all():
+        legacy_map_lower = legacy.map_name.strip().lower()
+        for lmap in all_legacy_maps:
             gs_names = lmap.game_session_names or []
             if gs_names:
                 for gs_name in gs_names:
-                    if str(gs_name).strip().lower() == legacy.map_name.strip().lower():
+                    if str(gs_name).strip().lower() == legacy_map_lower:
                         map_matches.append(lmap)
+                        break
             else:
-                if lmap.display_name.strip().lower() == legacy.map_name.strip().lower():
+                if lmap.display_name.strip().lower() == legacy_map_lower:
                     map_matches.append(lmap)
         if len(map_matches) == 0:
             errors.append(f"Aucune correspondance de map trouvée pour session {legacy.session_id} : {legacy.map_name}")
@@ -586,15 +597,14 @@ def import_legacy_gamesessions(request):
                     end_time=legacy.end_time,
                     verdict=verdict
                 )
-                # Import des joueurs/roles
                 legacy_gsprs = LegacyGameSessionPlayerRole.objects.filter(gamesession_id=legacy.session_id)
                 for gspr in legacy_gsprs:
-                    legacy_player = LegacyPlayers.objects.filter(legacy_id=gspr.player_id).first()
+                    legacy_player = players_by_legacy_id.get(gspr.player_id)
                     player_obj = None
                     if legacy_player:
-                        player_obj = Player.objects.filter(name=legacy_player.name).first()
+                        player_obj = players_by_name.get(legacy_player.name)
                     role_name = None
-                    legacy_role = LegacyRole.objects.filter(legacy_id=gspr.role_id).first()
+                    legacy_role = roles_by_legacy_id.get(gspr.role_id)
                     if legacy_role:
                         role_name = legacy_role.name
                     if player_obj and role_name:
@@ -612,7 +622,10 @@ def import_legacy_gamesessions(request):
                             status=status_value
                         )
                     else:
-                        errors.append(f"Joueur ou rôle introuvable pour session {legacy.session_id} (player_id={gspr.player_id}, role_id={gspr.role_id})")
+                        errors.append(
+                            f"Joueur ou rôle introuvable pour session {legacy.session_id} "
+                            f"(player_id={gspr.player_id}, role_id={gspr.role_id})"
+                        )
                 legacy.delete()
                 imported += 1
         except Exception as e:

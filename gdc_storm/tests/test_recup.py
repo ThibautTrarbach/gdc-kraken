@@ -2,7 +2,7 @@ import json
 import os
 from unittest.mock import MagicMock, patch
 
-from django.contrib.auth.models import User
+from django.contrib.auth.models import User, Group
 from django.core.files.uploadedfile import SimpleUploadedFile
 from django.test import Client, TestCase, RequestFactory
 from django.urls import reverse
@@ -17,6 +17,12 @@ from gdc_storm.views import (
     get_upload_temp_dir,
     update_mission_from_pbo,
 )
+
+
+def _make_mission_maker(user):
+    group, _ = Group.objects.get_or_create(name='Mission Maker')
+    user.groups.add(group)
+    return user
 
 
 class GetRecupUserTest(TestCase):
@@ -98,7 +104,9 @@ class SoftCreateUpdateTest(TestCase):
     def setUp(self):
         self.factory = RequestFactory()
         self.owner = User.objects.create_user(username='owner', password='pass')
-        self.uploader = User.objects.create_user(username='uploader', password='pass')
+        self.uploader = _make_mission_maker(
+            User.objects.create_user(username='uploader', password='pass')
+        )
         self.recup = get_recup_user()
         MapName.objects.create(code_name='altis', display_name='Altis')
         self.temp_dir = get_upload_temp_dir()
@@ -265,11 +273,51 @@ class SoftCreateUpdateTest(TestCase):
         self.assertEqual(mission.version, '2')
         self.assertEqual(mission.authors, 'New')
 
+    @patch('gdc_storm.views.save_pbo_to_storage')
+    @patch('gdc_storm.views.backup_existing_pbo')
+    @patch('gdc_storm.views.extract_briefing_from_pbo')
+    @patch('gdc_storm.views.extract_mission_data_from_pbo')
+    @patch('gdc_storm.views.PBOFile.read_file')
+    def test_preserve_owner_denied_without_mission_maker(
+        self, mock_read, mock_extract, mock_briefing, mock_backup, mock_save
+    ):
+        outsider = User.objects.create_user(username='outsider_upd', password='pass')
+        existing = Mission.objects.create(
+            name='CPC-CO[20]-DeniedMission',
+            user=self.owner,
+            authors='Owner',
+            max_players=20,
+            type='CO',
+            version='1',
+            map='altis',
+        )
+        request = self.factory.post('/recup/commit/')
+        request.user = outsider
+        mission, msg = update_mission_from_pbo(
+            request,
+            existing,
+            self.temp_path,
+            'CPC-CO[20]-DeniedMission-V2.altis.pbo',
+            'CO',
+            20,
+            'V2',
+            'altis',
+            strict=False,
+            preserve_owner=True,
+        )
+        self.assertIsNone(mission)
+        self.assertIn('droit', msg.lower())
+        existing.refresh_from_db()
+        self.assertEqual(existing.version, '1')
+
 
 class RecupEndpointsTest(TestCase):
     def setUp(self):
         self.client = Client()
-        self.user = User.objects.create_user(username='plain', password='pass')
+        self.user = _make_mission_maker(
+            User.objects.create_user(username='plain', password='pass')
+        )
+        self.outsider = User.objects.create_user(username='outsider', password='pass')
         MapName.objects.create(code_name='altis', display_name='Altis')
         MapName.objects.create(code_name='malden', display_name='Malden')
 
@@ -278,14 +326,19 @@ class RecupEndpointsTest(TestCase):
         self.assertEqual(resp.status_code, 302)
         self.assertIn('/login/', resp.url)
 
-    def test_page_ok_for_any_authenticated_user(self):
+    def test_page_forbidden_without_mission_maker(self):
+        self.client.login(username='outsider', password='pass')
+        resp = self.client.get(reverse('recup_missions'))
+        self.assertEqual(resp.status_code, 403)
+
+    def test_page_ok_for_mission_maker(self):
         self.client.login(username='plain', password='pass')
         resp = self.client.get(reverse('recup_missions'))
         self.assertEqual(resp.status_code, 200)
         self.assertContains(resp, 'MPMissionsCache')
         self.assertContains(resp, 'GDC-RECUP')
 
-    def test_analyze_ok_for_plain_user(self):
+    def test_analyze_ok_for_mission_maker(self):
         self.client.login(username='plain', password='pass')
         uploaded = SimpleUploadedFile(
             'CPC-CO[20]-FreshRecup-V1.altis.pbo',
@@ -298,6 +351,16 @@ class RecupEndpointsTest(TestCase):
         self.assertTrue(data['success'])
         self.assertEqual(data['items'][0]['action'], 'create')
         os.remove(data['items'][0]['temp_file_path'])
+
+    def test_analyze_forbidden_for_plain_user(self):
+        self.client.login(username='outsider', password='pass')
+        uploaded = SimpleUploadedFile(
+            'CPC-CO[20]-FreshRecup-V1.altis.pbo',
+            b'fake-pbo-content',
+            content_type='application/octet-stream',
+        )
+        resp = self.client.post(reverse('recup_analyze'), {'pbo_files': uploaded})
+        self.assertEqual(resp.status_code, 403)
 
     def test_analyze_invalid_filename(self):
         self.client.login(username='plain', password='pass')
