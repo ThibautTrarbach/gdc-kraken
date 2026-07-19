@@ -20,6 +20,7 @@ urlpatterns = [
     path('upload/analyze/', views.upload_analyze, name='upload_analyze'),
     path('upload/commit/', views.upload_commit, name='upload_commit'),
     path('recup/', views.recup_missions, name='recup_missions'),
+    path('recup/prefetch/', views.recup_prefetch, name='recup_prefetch'),
     path('recup/analyze/', views.recup_analyze, name='recup_analyze'),
     path('recup/commit/', views.recup_commit, name='recup_commit'),
     path('recup/scan-pbo/', views.scan_pbo_missing, name='scan_pbo_missing'),

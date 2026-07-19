@@ -160,6 +160,7 @@ from django.utils.dateparse import parse_datetime
 from functools import wraps
 
 UPLOAD_ANALYZE_MAX_FILES = 100
+RECUP_ANALYZE_MAX_FILES = 1500
 RECUP_USERNAME = 'GDC-RECUP'
 # Temporaire : désactive la validation stricte des noms de fichiers en /recup/
 RECUP_RELAX_FILENAME = False
@@ -215,6 +216,11 @@ def home(request):
 
 def user_is_mission_maker(user):
     return user.is_authenticated and (user.is_superuser or user.groups.filter(name='Mission Maker').exists())
+
+
+def user_can_recup(user):
+    """Tout utilisateur connecté et actif peut utiliser la récupération."""
+    return bool(user and user.is_authenticated and user.is_active)
 
 def clean_temp_files(temp_dir, max_age_seconds=3600):
     """Supprime les fichiers temporaires plus vieux que max_age_seconds dans temp_dir."""
@@ -707,6 +713,13 @@ def _mission_maker_forbidden_json():
     )
 
 
+def _recup_forbidden_json():
+    return JsonResponse(
+        {'success': False, 'error': "Vous n'avez pas le droit de récupérer une mission."},
+        status=403,
+    )
+
+
 @login_required
 def upload_mission(request):
     """Page d'upload multi-PBO (analyse + récap + commit via endpoints JSON)."""
@@ -943,12 +956,12 @@ def upload_commit(request):
 
 @login_required
 def recup_missions(request):
-    """Page de récupération multi-PBO depuis le cache joueur (Mission Maker requis)."""
-    if not user_is_mission_maker(request.user):
+    """Page de récupération multi-PBO depuis le cache joueur (utilisateur actif requis)."""
+    if not user_can_recup(request.user):
         return HttpResponse("Vous n'avez pas le droit de récupérer une mission.", status=403)
     clean_temp_files(get_upload_temp_dir())
     return render(request, 'gdc_storm/recup_missions.html', {
-        'max_files': UPLOAD_ANALYZE_MAX_FILES,
+        'max_files': RECUP_ANALYZE_MAX_FILES,
     })
 
 
@@ -1070,12 +1083,138 @@ def scan_pbo_missing_apply(request):
     })
 
 
+def _parse_recup_filename_for_dedupe(filename):
+    """
+    Parse un nom de fichier pour la dédup récup.
+    Retourne (mission_name, map, max_players, version) ou None si invalide.
+    """
+    if RECUP_RELAX_FILENAME:
+        parsed_pack = recup_parse_mission_filename(filename)
+        if not parsed_pack:
+            return None
+        parsed, _relaxed = parsed_pack
+    else:
+        parsed = parse_mission_filename(filename)
+        if not parsed:
+            return None
+    mission_name, _mission_type, max_players, version, map_name = parsed
+    return mission_name, map_name.lower(), int(max_players), version
+
+
+def dedupe_recup_filenames(filenames):
+    """
+    Parmi une seule version (la plus récente) par mission dans le lot.
+    Retourne (kept_filenames, skipped) où skipped = [{filename, reason}, ...].
+    """
+    skipped = []
+    best_by_key = {}  # key -> (filename, version_raw)
+
+    for raw_name in filenames:
+        filename = os.path.basename(str(raw_name or '').strip())
+        if not filename:
+            continue
+        parsed = _parse_recup_filename_for_dedupe(filename)
+        if not parsed:
+            skipped.append({
+                'filename': filename,
+                'reason': (
+                    "Nom de fichier invalide. Format attendu : "
+                    "CPC-TypeDeMission[XX]-Nom_De_La_Mission-VY.nom_de_map.pbo"
+                ),
+            })
+            continue
+
+        mission_name, map_name, max_players, version = parsed
+        key = (mission_name, map_name, max_players)
+        if key not in best_by_key:
+            best_by_key[key] = (filename, version)
+            continue
+
+        prev_filename, prev_version = best_by_key[key]
+        _old, _new, is_newer = _compare_versions(
+            str(prev_version).lstrip('Vv'),
+            version,
+        )
+        if is_newer:
+            skipped.append({
+                'filename': prev_filename,
+                'reason': (
+                    "Version plus ancienne dans le lot — "
+                    "seule la plus récente est conservée."
+                ),
+            })
+            best_by_key[key] = (filename, version)
+        else:
+            skipped.append({
+                'filename': filename,
+                'reason': (
+                    "Version plus ancienne dans le lot — "
+                    "seule la plus récente est conservée."
+                ),
+            })
+
+    kept = [fn for fn, _ver in best_by_key.values()]
+    return kept, skipped
+
+
+@login_required
+@require_POST
+def recup_prefetch(request):
+    """
+    Pré-filtre récup : analyse les noms seuls (sans upload de contenu).
+    Déduplique les versions du lot, puis indique quels fichiers sont utiles.
+    """
+    if not user_can_recup(request.user):
+        return _recup_forbidden_json()
+    try:
+        payload = json.loads(request.body.decode('utf-8'))
+    except (json.JSONDecodeError, UnicodeDecodeError):
+        return JsonResponse({'success': False, 'error': 'JSON invalide.'}, status=400)
+
+    filenames = payload.get('filenames')
+    if not isinstance(filenames, list) or not filenames:
+        return JsonResponse(
+            {'success': False, 'error': 'Aucun nom de fichier fourni.'},
+            status=400,
+        )
+    if len(filenames) > RECUP_ANALYZE_MAX_FILES:
+        return JsonResponse(
+            {
+                'success': False,
+                'error': f"Trop de fichiers (max {RECUP_ANALYZE_MAX_FILES}).",
+            },
+            status=400,
+        )
+
+    kept, skipped = dedupe_recup_filenames(filenames)
+    needed = []
+    for filename in kept:
+        analysis = analyze_pbo_upload(filename, request.user, allow_pbo_restore=True)
+        if analysis['action'] == 'error':
+            skipped.append({
+                'filename': filename,
+                'reason': analysis.get('error') or 'Ignoré',
+            })
+        else:
+            needed.append({
+                'filename': filename,
+                'action': analysis['action'],
+                'details': analysis.get('details') or {},
+            })
+
+    return JsonResponse({
+        'success': True,
+        'needed': needed,
+        'skipped': skipped,
+    })
+
+
 @login_required
 @require_POST
 def recup_analyze(request):
     """Analyse un ou plusieurs PBO pour la récupération (même logique doublons/versions que l'upload)."""
-    if not user_is_mission_maker(request.user):
-        return _mission_maker_forbidden_json()
+    if not user_can_recup(request.user):
+        return _recup_forbidden_json()
     clean_temp_files(get_upload_temp_dir())
     files = list(request.FILES.getlist('pbo_files'))
     if not files:
@@ -1087,11 +1226,11 @@ def recup_analyze(request):
             {'success': False, 'error': "Aucun fichier .pbo fourni."},
             status=400,
         )
-    if len(files) > UPLOAD_ANALYZE_MAX_FILES:
+    if len(files) > RECUP_ANALYZE_MAX_FILES:
         return JsonResponse(
             {
                 'success': False,
-                'error': f"Trop de fichiers (max {UPLOAD_ANALYZE_MAX_FILES} par analyse).",
+                'error': f"Trop de fichiers (max {RECUP_ANALYZE_MAX_FILES} par analyse).",
             },
             status=400,
         )
@@ -1141,8 +1280,8 @@ def recup_analyze(request):
 @require_POST
 def recup_commit(request):
     """Commit récupération : création sous GDC-RECUP, update sans changer le propriétaire, validation soft."""
-    if not user_is_mission_maker(request.user):
-        return _mission_maker_forbidden_json()
+    if not user_can_recup(request.user):
+        return _recup_forbidden_json()
     try:
         payload = json.loads(request.body.decode('utf-8'))
     except (json.JSONDecodeError, UnicodeDecodeError):
@@ -1154,11 +1293,11 @@ def recup_commit(request):
             {'success': False, 'error': 'Aucun élément à traiter.'},
             status=400,
         )
-    if len(items) > UPLOAD_ANALYZE_MAX_FILES:
+    if len(items) > RECUP_ANALYZE_MAX_FILES:
         return JsonResponse(
             {
                 'success': False,
-                'error': f"Trop d'éléments (max {UPLOAD_ANALYZE_MAX_FILES}).",
+                'error': f"Trop d'éléments (max {RECUP_ANALYZE_MAX_FILES}).",
             },
             status=400,
         )
@@ -1768,12 +1907,10 @@ def update_mission_from_pbo(
 ):
     is_admin = request.user.is_superuser
     is_owner = existing_mission.user == request.user
-    is_mission_maker = user_is_mission_maker(request.user)
-    # preserve_owner : ne change pas le propriétaire (recup/scan), mais n'autorise pas le bypass.
-    # Autorisé : admin, propriétaire, ou Mission Maker en mode preserve_owner.
-    allowed = is_admin or is_owner or (preserve_owner and is_mission_maker)
+    # preserve_owner : récup / scan — tout utilisateur actif peut restaurer sans changer le propriétaire.
+    allowed = is_admin or is_owner or (preserve_owner and user_can_recup(request.user))
     if not allowed:
-        return None, "Vous n'avez pas le droit de mettre à jour cette mission (seul le propriétaire, un Mission Maker ou un admin peut le faire)."
+        return None, "Vous n'avez pas le droit de mettre à jour cette mission (seul le propriétaire, un utilisateur actif en récupération ou un admin peut le faire)."
     if not os.path.exists(temp_file_path):
         return None, "Fichier temporaire manquant ou expiré lors de la confirmation de mise à jour. Merci de recommencer l'upload."
     warnings = []

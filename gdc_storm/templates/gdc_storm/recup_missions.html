@@ -68,6 +68,11 @@
                 (ex. <code>CPC-CO[20]-MaMission-V2.altis.pbo</code>)
             </li>
             <li>
+                Jusqu’à {{ max_files }} fichiers. Seuls les PBO utiles (manquants, plus récents,
+                ou doublons à confirmer) sont envoyés au serveur. Si plusieurs versions
+                d’une même mission sont sélectionnées, seule la plus récente est gardée.
+            </li>
+            <li>
                 Les missions incomplètes (sans HC, SQM binarisé, briefing manquant) sont acceptées ici ;
                 un nom de fichier hors format est refusé.
             </li>
@@ -85,6 +90,7 @@
 
     <div id="upload-step-recap" style="display:none;">
         <div style="font-weight:700;font-size:1.2em;margin-bottom:8px;">Récapitulatif des actions proposées</div>
+        <div id="prefetch-summary" style="margin-bottom:12px;color:#555;"></div>
         <div style="margin-bottom:12px;color:#555;">Cochez les missions à traiter et confirmez les mises à jour / doublons si besoin.</div>
         <div style="overflow-x:auto;">
             <table class="upload-recap-table" id="recap-table">
@@ -138,6 +144,7 @@
     const stepResult = document.getElementById('upload-step-result');
     const uploadError = document.getElementById('upload-error');
     const recapBody = document.getElementById('recap-body');
+    const prefetchSummary = document.getElementById('prefetch-summary');
 
     let selectedFiles = [];
     let analyzedItems = [];
@@ -147,6 +154,21 @@
     function showError(msg) {
         uploadError.style.display = msg ? 'block' : 'none';
         uploadError.textContent = msg || '';
+    }
+
+    function renderPrefetchSummary(neededCount, skipped) {
+        const skippedCount = (skipped && skipped.length) || 0;
+        let html = `<b>${neededCount}</b> fichier(s) utile(s) envoyé(s) — <b>${skippedCount}</b> ignoré(s).`;
+        if (skippedCount) {
+            html += '<details style="margin-top:8px;"><summary style="cursor:pointer;">Voir les fichiers ignorés</summary><ul style="margin:8px 0 0 18px;padding:0;">';
+            skipped.forEach(s => {
+                const name = (s && s.filename) || '';
+                const reason = (s && s.reason) || 'Ignoré';
+                html += `<li style="margin-bottom:4px;"><code>${name}</code> — ${reason}</li>`;
+            });
+            html += '</ul></details>';
+        }
+        prefetchSummary.innerHTML = html;
     }
 
     function updateFileList() {
@@ -274,8 +296,9 @@
         return '—';
     }
 
-    function renderRecap(items) {
+    function renderRecap(items, skipped) {
         analyzedItems = items;
+        renderPrefetchSummary(items.length, skipped || []);
         recapBody.innerHTML = '';
         items.forEach((item, index) => {
             const tr = document.createElement('tr');
@@ -298,6 +321,7 @@
         selectedFiles = [];
         analyzedItems = [];
         fileInput.value = '';
+        prefetchSummary.innerHTML = '';
         updateFileList();
         stepSelect.style.display = 'block';
         stepRecap.style.display = 'none';
@@ -313,10 +337,58 @@
         if (!selectedFiles.length) return;
         showError('');
         analyzeBtn.disabled = true;
-        analyzeBtn.textContent = 'Analyse en cours…';
-        const formData = new FormData();
-        selectedFiles.forEach(f => formData.append('pbo_files', f));
+        analyzeBtn.textContent = 'Filtrage…';
         try {
+            const prefetchResp = await fetch('{% url "recup_prefetch" %}', {
+                method: 'POST',
+                credentials: 'same-origin',
+                headers: {
+                    'X-CSRFToken': csrftoken,
+                    'Content-Type': 'application/json'
+                },
+                body: JSON.stringify({
+                    filenames: selectedFiles.map(f => f.name)
+                })
+            });
+            const prefetchJson = await prefetchResp.json().catch(() => null);
+            if (!prefetchResp.ok || !prefetchJson || !prefetchJson.success) {
+                showError(
+                    (prefetchJson && prefetchJson.error)
+                    || prefetchResp.statusText
+                    || 'Erreur lors du pré-filtre'
+                );
+                analyzeBtn.disabled = false;
+                analyzeBtn.textContent = 'Analyser';
+                return;
+            }
+
+            const needed = prefetchJson.needed || [];
+            const skipped = prefetchJson.skipped || [];
+            if (!needed.length) {
+                renderPrefetchSummary(0, skipped);
+                stepSelect.style.display = 'none';
+                stepRecap.style.display = 'block';
+                stepResult.style.display = 'none';
+                recapBody.innerHTML = '';
+                analyzedItems = [];
+                showError('Aucun fichier utile à envoyer (déjà présents, obsolètes ou invalides).');
+                analyzeBtn.disabled = false;
+                analyzeBtn.textContent = 'Analyser';
+                return;
+            }
+
+            const neededNames = new Set(needed.map(n => n.filename));
+            const filesToUpload = selectedFiles.filter(f => neededNames.has(f.name));
+            if (!filesToUpload.length) {
+                showError('Aucun fichier local correspondant aux missions utiles.');
+                analyzeBtn.disabled = false;
+                analyzeBtn.textContent = 'Analyser';
+                return;
+            }
+
+            analyzeBtn.textContent = 'Envoi des fichiers utiles…';
+            const formData = new FormData();
+            filesToUpload.forEach(f => formData.append('pbo_files', f));
             const resp = await fetch('{% url "recup_analyze" %}', {
                 method: 'POST',
                 body: formData,
@@ -330,7 +402,7 @@
                 analyzeBtn.textContent = 'Analyser';
                 return;
             }
-            renderRecap(json.items || []);
+            renderRecap(json.items || [], skipped);
         } catch (e) {
             showError(String(e));
             analyzeBtn.disabled = false;

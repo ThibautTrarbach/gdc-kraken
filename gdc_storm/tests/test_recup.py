@@ -9,10 +9,12 @@ from django.urls import reverse
 
 from gdc_storm.models import Mission, MapName
 from gdc_storm.views import (
+    RECUP_ANALYZE_MAX_FILES,
     RECUP_USERNAME,
     UPLOAD_ANALYZE_MAX_FILES,
     analyze_pbo_upload,
     create_mission_from_pbo,
+    dedupe_recup_filenames,
     get_recup_user,
     get_upload_temp_dir,
     update_mission_from_pbo,
@@ -278,10 +280,63 @@ class SoftCreateUpdateTest(TestCase):
     @patch('gdc_storm.views.extract_briefing_from_pbo')
     @patch('gdc_storm.views.extract_mission_data_from_pbo')
     @patch('gdc_storm.views.PBOFile.read_file')
-    def test_preserve_owner_denied_without_mission_maker(
+    def test_preserve_owner_allowed_for_active_user(
         self, mock_read, mock_extract, mock_briefing, mock_backup, mock_save
     ):
         outsider = User.objects.create_user(username='outsider_upd', password='pass')
+        existing = Mission.objects.create(
+            name='CPC-CO[20]-AllowedMission',
+            user=self.owner,
+            authors='Owner',
+            max_players=20,
+            type='CO',
+            version='1',
+            map='altis',
+        )
+        mock_read.return_value = self._mock_pbo(binarized=False, has_hc=True)
+        mock_extract.return_value = (
+            {
+                'author': 'New',
+                'onLoadMission': None,
+                'overviewText': None,
+                'loadScreen': None,
+                'minPlayers': None,
+            },
+            [],
+        )
+        mock_briefing.return_value = ([], [])
+        mock_save.return_value = None
+        request = self.factory.post('/recup/commit/')
+        request.user = outsider
+        mission, msg = update_mission_from_pbo(
+            request,
+            existing,
+            self.temp_path,
+            'CPC-CO[20]-AllowedMission-V2.altis.pbo',
+            'CO',
+            20,
+            'V2',
+            'altis',
+            strict=False,
+            preserve_owner=True,
+        )
+        self.assertIsNotNone(mission)
+        self.assertTrue(msg is None or isinstance(msg, str))
+        existing.refresh_from_db()
+        self.assertEqual(existing.version, '2')
+        self.assertEqual(existing.user_id, self.owner.id)
+
+    @patch('gdc_storm.views.save_pbo_to_storage')
+    @patch('gdc_storm.views.backup_existing_pbo')
+    @patch('gdc_storm.views.extract_briefing_from_pbo')
+    @patch('gdc_storm.views.extract_mission_data_from_pbo')
+    @patch('gdc_storm.views.PBOFile.read_file')
+    def test_preserve_owner_denied_for_inactive_user(
+        self, mock_read, mock_extract, mock_briefing, mock_backup, mock_save
+    ):
+        inactive = User.objects.create_user(username='inactive_upd', password='pass')
+        inactive.is_active = False
+        inactive.save()
         existing = Mission.objects.create(
             name='CPC-CO[20]-DeniedMission',
             user=self.owner,
@@ -292,7 +347,7 @@ class SoftCreateUpdateTest(TestCase):
             map='altis',
         )
         request = self.factory.post('/recup/commit/')
-        request.user = outsider
+        request.user = inactive
         mission, msg = update_mission_from_pbo(
             request,
             existing,
@@ -326,10 +381,23 @@ class RecupEndpointsTest(TestCase):
         self.assertEqual(resp.status_code, 302)
         self.assertIn('/login/', resp.url)
 
-    def test_page_forbidden_without_mission_maker(self):
+    def test_page_ok_for_active_user_without_mission_maker(self):
         self.client.login(username='outsider', password='pass')
         resp = self.client.get(reverse('recup_missions'))
-        self.assertEqual(resp.status_code, 403)
+        self.assertEqual(resp.status_code, 200)
+        self.assertContains(resp, 'MPMissionsCache')
+        self.assertContains(resp, 'GDC-RECUP')
+
+    def test_page_forbidden_for_inactive_user(self):
+        inactive = User.objects.create_user(username='inactive', password='pass')
+        inactive.is_active = False
+        inactive.save()
+        self.client.force_login(inactive)
+        resp = self.client.get(reverse('recup_missions'))
+        # Session Django n'authentifie pas un compte inactif → redirect login
+        self.assertIn(resp.status_code, (302, 403))
+        if resp.status_code == 302:
+            self.assertIn('/login/', resp.url)
 
     def test_page_ok_for_mission_maker(self):
         self.client.login(username='plain', password='pass')
@@ -352,15 +420,34 @@ class RecupEndpointsTest(TestCase):
         self.assertEqual(data['items'][0]['action'], 'create')
         os.remove(data['items'][0]['temp_file_path'])
 
-    def test_analyze_forbidden_for_plain_user(self):
+    def test_analyze_ok_for_active_user_without_mission_maker(self):
         self.client.login(username='outsider', password='pass')
+        uploaded = SimpleUploadedFile(
+            'CPC-CO[20]-FreshOutsider-V1.altis.pbo',
+            b'fake-pbo-content',
+            content_type='application/octet-stream',
+        )
+        resp = self.client.post(reverse('recup_analyze'), {'pbo_files': uploaded})
+        self.assertEqual(resp.status_code, 200)
+        data = resp.json()
+        self.assertTrue(data['success'])
+        self.assertEqual(data['items'][0]['action'], 'create')
+        os.remove(data['items'][0]['temp_file_path'])
+
+    def test_analyze_forbidden_for_inactive_user(self):
+        inactive = User.objects.create_user(username='inactive2', password='pass')
+        inactive.is_active = False
+        inactive.save()
+        self.client.force_login(inactive)
         uploaded = SimpleUploadedFile(
             'CPC-CO[20]-FreshRecup-V1.altis.pbo',
             b'fake-pbo-content',
             content_type='application/octet-stream',
         )
         resp = self.client.post(reverse('recup_analyze'), {'pbo_files': uploaded})
-        self.assertEqual(resp.status_code, 403)
+        self.assertIn(resp.status_code, (302, 403))
+        if resp.status_code == 302:
+            self.assertIn('/login/', resp.url)
 
     def test_analyze_invalid_filename(self):
         self.client.login(username='plain', password='pass')
@@ -392,6 +479,8 @@ class RecupEndpointsTest(TestCase):
             os.remove(item['temp_file_path'])
 
     def test_analyze_rejects_too_many_files(self):
+        from unittest.mock import patch
+
         self.client.login(username='plain', password='pass')
         files = [
             SimpleUploadedFile(
@@ -399,10 +488,171 @@ class RecupEndpointsTest(TestCase):
                 b'x',
                 content_type='application/octet-stream',
             )
-            for i in range(UPLOAD_ANALYZE_MAX_FILES + 1)
+            for i in range(3)
         ]
-        resp = self.client.post(reverse('recup_analyze'), {'pbo_files': files})
+        with patch('gdc_storm.views.RECUP_ANALYZE_MAX_FILES', 2):
+            resp = self.client.post(reverse('recup_analyze'), {'pbo_files': files})
         self.assertEqual(resp.status_code, 400)
+        self.assertIn('2', resp.json()['error'])
+
+    def test_page_exposes_recup_max_files(self):
+        self.client.login(username='plain', password='pass')
+        resp = self.client.get(reverse('recup_missions'))
+        self.assertEqual(resp.status_code, 200)
+        self.assertEqual(resp.context['max_files'], RECUP_ANALYZE_MAX_FILES)
+        self.assertNotEqual(RECUP_ANALYZE_MAX_FILES, UPLOAD_ANALYZE_MAX_FILES)
+
+    def test_prefetch_create_needed(self):
+        self.client.login(username='plain', password='pass')
+        filename = 'CPC-CO[20]-FreshPrefetch-V1.altis.pbo'
+        resp = self.client.post(
+            reverse('recup_prefetch'),
+            data=json.dumps({'filenames': [filename]}),
+            content_type='application/json',
+        )
+        self.assertEqual(resp.status_code, 200)
+        data = resp.json()
+        self.assertTrue(data['success'])
+        self.assertEqual(len(data['needed']), 1)
+        self.assertEqual(data['needed'][0]['filename'], filename)
+        self.assertEqual(data['needed'][0]['action'], 'create')
+        self.assertEqual(data['skipped'], [])
+
+    def test_prefetch_skips_when_pbo_on_disk(self):
+        from django.test import override_settings
+        import tempfile
+        import shutil
+
+        self.client.login(username='plain', password='pass')
+        storage = tempfile.mkdtemp(prefix='gdc_pbo_')
+        self.addCleanup(shutil.rmtree, storage, ignore_errors=True)
+        filename = 'CPC-CO[20]-AlreadyThere-V1.altis.pbo'
+        with open(os.path.join(storage, filename), 'wb') as f:
+            f.write(b'existing')
+        with override_settings(MISSIONS_PBO_STORAGE_PATH=storage):
+            resp = self.client.post(
+                reverse('recup_prefetch'),
+                data=json.dumps({'filenames': [filename]}),
+                content_type='application/json',
+            )
+        self.assertEqual(resp.status_code, 200)
+        data = resp.json()
+        self.assertEqual(data['needed'], [])
+        self.assertEqual(len(data['skipped']), 1)
+        self.assertEqual(data['skipped'][0]['filename'], filename)
+        self.assertIn('remplacement non autorisé', data['skipped'][0]['reason'].lower())
+
+    def test_prefetch_dedupes_older_versions(self):
+        self.client.login(username='plain', password='pass')
+        v1 = 'CPC-CO[20]-MultiVer-V1.altis.pbo'
+        v3 = 'CPC-CO[20]-MultiVer-V3.altis.pbo'
+        resp = self.client.post(
+            reverse('recup_prefetch'),
+            data=json.dumps({'filenames': [v1, v3]}),
+            content_type='application/json',
+        )
+        self.assertEqual(resp.status_code, 200)
+        data = resp.json()
+        self.assertEqual(len(data['needed']), 1)
+        self.assertEqual(data['needed'][0]['filename'], v3)
+        self.assertEqual(data['needed'][0]['action'], 'create')
+        skipped_names = {s['filename'] for s in data['skipped']}
+        self.assertIn(v1, skipped_names)
+        self.assertTrue(
+            any('plus ancienne' in s['reason'].lower() for s in data['skipped'] if s['filename'] == v1)
+        )
+
+    def test_prefetch_restore_needed(self):
+        self.client.login(username='plain', password='pass')
+        owner = User.objects.create_user(username='owner_pref', password='pass')
+        Mission.objects.create(
+            name='CPC-CO[20]-RestoreMe',
+            user=owner,
+            authors='Auteur',
+            max_players=20,
+            type='CO',
+            version='2',
+            map='altis',
+            pbo_missing=True,
+        )
+        filename = 'CPC-CO[20]-RestoreMe-V2.altis.pbo'
+        resp = self.client.post(
+            reverse('recup_prefetch'),
+            data=json.dumps({'filenames': [filename]}),
+            content_type='application/json',
+        )
+        self.assertEqual(resp.status_code, 200)
+        data = resp.json()
+        self.assertEqual(len(data['needed']), 1)
+        self.assertEqual(data['needed'][0]['action'], 'update')
+        self.assertTrue(data['needed'][0]['details'].get('restore'))
+
+    def test_prefetch_update_newer_needed(self):
+        self.client.login(username='plain', password='pass')
+        owner = User.objects.create_user(username='owner_up', password='pass')
+        Mission.objects.create(
+            name='CPC-CO[20]-UpgradeMe',
+            user=owner,
+            authors='Auteur',
+            max_players=20,
+            type='CO',
+            version='1',
+            map='altis',
+        )
+        filename = 'CPC-CO[20]-UpgradeMe-V4.altis.pbo'
+        resp = self.client.post(
+            reverse('recup_prefetch'),
+            data=json.dumps({'filenames': [filename]}),
+            content_type='application/json',
+        )
+        self.assertEqual(resp.status_code, 200)
+        data = resp.json()
+        self.assertEqual(len(data['needed']), 1)
+        self.assertEqual(data['needed'][0]['action'], 'update')
+        self.assertFalse(data['needed'][0]['details'].get('restore'))
+
+    def test_prefetch_rejects_too_many_filenames(self):
+        from unittest.mock import patch
+
+        self.client.login(username='plain', password='pass')
+        filenames = [f'CPC-CO[20]-TooMany{i}-V1.altis.pbo' for i in range(3)]
+        with patch('gdc_storm.views.RECUP_ANALYZE_MAX_FILES', 2):
+            resp = self.client.post(
+                reverse('recup_prefetch'),
+                data=json.dumps({'filenames': filenames}),
+                content_type='application/json',
+            )
+        self.assertEqual(resp.status_code, 400)
+        self.assertIn('2', resp.json()['error'])
+
+    def test_prefetch_forbidden_for_inactive_user(self):
+        inactive = User.objects.create_user(username='inactive3', password='pass')
+        inactive.is_active = False
+        inactive.save()
+        self.client.force_login(inactive)
+        resp = self.client.post(
+            reverse('recup_prefetch'),
+            data=json.dumps({'filenames': ['CPC-CO[20]-X-V1.altis.pbo']}),
+            content_type='application/json',
+        )
+        self.assertIn(resp.status_code, (302, 403))
+        if resp.status_code == 302:
+            self.assertIn('/login/', resp.url)
+
+    def test_dedupe_recup_filenames_keeps_newest(self):
+        kept, skipped = dedupe_recup_filenames([
+            'CPC-CO[20]-Same-V1.altis.pbo',
+            'CPC-CO[20]-Same-V10.altis.pbo',
+            'CPC-CO[20]-Same-V2.altis.pbo',
+            'CPC-CO[20]-Other-V1.malden.pbo',
+        ])
+        self.assertEqual(set(kept), {
+            'CPC-CO[20]-Same-V10.altis.pbo',
+            'CPC-CO[20]-Other-V1.malden.pbo',
+        })
+        skipped_names = {s['filename'] for s in skipped}
+        self.assertIn('CPC-CO[20]-Same-V1.altis.pbo', skipped_names)
+        self.assertIn('CPC-CO[20]-Same-V2.altis.pbo', skipped_names)
 
     @patch('gdc_storm.views.create_mission_from_pbo')
     def test_commit_create_uses_recup_owner(self, mock_create):
