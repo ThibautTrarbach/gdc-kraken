@@ -113,7 +113,7 @@
                     <label><input type="checkbox" data-col-toggle="carte" checked> Carte</label>
                     <label><input type="checkbox" data-col-toggle="auteur" checked> Auteur(s)</label>
                     <label><input type="checkbox" data-col-toggle="version"> Version</label>
-                    <label><input type="checkbox" data-col-toggle="date"> Date pub.</label>
+                    <label><input type="checkbox" data-col-toggle="date" checked> Date pub.</label>
                     <label><input type="checkbox" data-col-toggle="statut" checked> Statut</label>
                     <label><input type="checkbox" data-col-toggle="joueurs" checked> Min / Max</label>
                     <label><input type="checkbox" data-col-toggle="jouee" checked> Sessions</label>
@@ -296,7 +296,7 @@
     </div>
     <script>
     const COL_STORAGE_KEY = 'missionListVisibleCols';
-    const DEFAULT_HIDDEN_COLS = ['type', 'version', 'date'];
+    const DEFAULT_HIDDEN_COLS = ['type', 'version'];
     const ALL_COLS = ['type', 'nom', 'carte', 'auteur', 'version', 'date', 'statut', 'joueurs', 'jouee', 'victoire', 'derniere'];
 
     function getVisibleCols() {
