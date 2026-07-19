@@ -90,6 +90,7 @@ class MissionOwnerAndWinRateTest(TestCase):
         self.assertEqual(resp.status_code, 200)
         self.assertContains(resp, '67 % (2/3)')
         self.assertContains(resp, 'Win Rate Test')
+        self.assertContains(resp, self.mission.name)
 
     def test_mission_list_win_rate(self):
         resp = self.client.get(reverse('mission_list'))
