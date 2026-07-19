@@ -1,0 +1,16 @@
+{% extends "gdc_storm/base.html" %}
+{% block title %}{% block head_title %}GDC Storm{% endblock %}{% endblock %}
+{% block content %}
+<div class="missions-container" style="max-width:520px;margin:40px auto 0 auto;padding:32px;border-radius:18px;background:#fff;box-shadow:0 2px 16px #0002;">
+    {% if messages %}
+        <div style="margin-bottom:18px;">
+            {% for message in messages %}
+                <div style="padding:10px 12px;margin-bottom:8px;border-radius:8px;background:{% if message.tags == 'error' %}#ffebee;color:#c62828{% else %}#e8f5e9;color:#2e7d32{% endif %};">
+                    {{ message }}
+                </div>
+            {% endfor %}
+        </div>
+    {% endif %}
+    {% block allauth_content %}{% endblock %}
+</div>
+{% endblock %}

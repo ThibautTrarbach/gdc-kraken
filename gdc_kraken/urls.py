@@ -21,6 +21,7 @@ from django.views.static import serve
 
 urlpatterns = [
     path('admin/', admin.site.urls),
+    path('accounts/', include('allauth.urls')),
     path('', include('gdc_storm.urls')),
     # Médias exposés sans nginx (DEBUG=False inclus).
     path('media/<path:path>', serve, {'document_root': settings.MEDIA_ROOT}),

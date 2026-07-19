@@ -60,6 +60,7 @@ fi
 mkdir -p "$MEDIA_ROOT" /app/staticfiles
 
 python manage.py migrate --noinput
+python manage.py ensure_site
 python manage.py collectstatic --noinput
 
 exec gunicorn gdc_kraken.wsgi:application \

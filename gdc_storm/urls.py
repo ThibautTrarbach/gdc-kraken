@@ -12,6 +12,9 @@ logout_redirect = lambda request: HttpResponseRedirect('/')
 
 urlpatterns = [
     path('changer-mot-de-passe/', views.change_password, name='change_password'),
+    path('compte/connexions/', views.account_connections, name='account_connections'),
+    path('compte/connexions/<str:provider>/delier/', views.disconnect_social_account, name='disconnect_social_account'),
+    path('compte/en-attente/', views.pending_approval, name='pending_approval'),
     path('', views.home, name='home'),
     path('upload/', views.upload_mission, name='upload_mission'),
     path('upload/analyze/', views.upload_analyze, name='upload_analyze'),

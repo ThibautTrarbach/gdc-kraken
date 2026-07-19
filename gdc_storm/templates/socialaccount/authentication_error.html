@@ -1,0 +1,14 @@
+{% extends "gdc_storm/base.html" %}
+{% block title %}Erreur de connexion - GDC Storm{% endblock %}
+{% block content %}
+<div class="missions-container" style="max-width:480px;margin:40px auto 0 auto;padding:32px;border-radius:18px;background:#fff;box-shadow:0 2px 16px #0002;text-align:center;">
+    <div class="missions-title">Échec de la connexion</div>
+    <p style="margin:18px 0 24px;line-height:1.5;color:#333;">
+        Une erreur est survenue lors de la connexion via Discord ou Steam.
+        Réessayez, ou connectez-vous avec votre nom d'utilisateur.
+    </p>
+    <a href="{% url 'login' %}" class="home-btn" style="background:#FFD600;color:#111;padding:10px 28px;text-decoration:none;border-radius:8px;display:inline-block;">
+        Retour à la connexion
+    </a>
+</div>
+{% endblock %}

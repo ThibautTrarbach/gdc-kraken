@@ -1,18 +1,13 @@
 from django.contrib import admin
-from .models import Mission, MapName, Player, GameSession, GameSessionPlayer, ApiToken
-from .models import LegacyRole, LegacyMission, LegacyImportError, LegacyGameSession, LegacyMapNames, LegacyGameSessionPlayerRole, LegacyPlayers
 from django.contrib.auth.models import User, Group
 from django.contrib.auth.admin import UserAdmin as BaseUserAdmin
 from django import forms
-import secrets
+from django.contrib import messages
 
-@admin.register(Mission)
-class MissionAdmin(admin.ModelAdmin):
-    list_display = ('name', 'version', 'map', 'status', 'pbo_missing', 'user')
-    list_filter = ('status', 'pbo_missing', 'type')
-    search_fields = ('name', 'authors', 'map')
+from .models import Mission, MapName, Player, GameSession, GameSessionPlayer, ApiToken
+from .models import LegacyRole, LegacyMission, LegacyImportError, LegacyGameSession, LegacyMapNames, LegacyGameSessionPlayerRole, LegacyPlayers
 
-
+admin.site.register(Mission)
 admin.site.register(Player)
 admin.site.register(GameSession)
 admin.site.register(GameSessionPlayer)
@@ -31,9 +26,29 @@ admin.site.register(LegacyPlayers)
 class MapNameAdmin(admin.ModelAdmin):
     list_display = ('code_name', 'display_name')
 
-# Ajout du groupe Mission Maker à la création d'utilisateur
+
+class PendingApprovalFilter(admin.SimpleListFilter):
+    title = "Validation"
+    parameter_name = "pending"
+
+    def lookups(self, request, model_admin):
+        return (
+            ("pending", "En attente"),
+            ("active", "Actifs"),
+        )
+
+    def queryset(self, request, queryset):
+        if self.value() == "pending":
+            return queryset.filter(is_active=False)
+        if self.value() == "active":
+            return queryset.filter(is_active=True)
+        return queryset
+
+
 class CustomUserAdmin(BaseUserAdmin):
-    list_display = BaseUserAdmin.list_display + ('get_role',)
+    list_display = BaseUserAdmin.list_display + ('get_role', 'get_social_providers', 'is_active')
+    list_filter = BaseUserAdmin.list_filter + (PendingApprovalFilter,)
+    actions = ('approve_accounts',)
 
     def get_role(self, obj):
         if obj.is_superuser:
@@ -43,8 +58,31 @@ class CustomUserAdmin(BaseUserAdmin):
         return "Utilisateur"
     get_role.short_description = "Rôle"
 
+    def get_social_providers(self, obj):
+        try:
+            providers = list(
+                obj.socialaccount_set.values_list('provider', flat=True)
+            )
+        except Exception:
+            return "—"
+        if not providers:
+            return "—"
+        return ", ".join(sorted(providers))
+    get_social_providers.short_description = "Social"
+
+    @admin.action(description="Approuver les comptes sélectionnés")
+    def approve_accounts(self, request, queryset):
+        updated = queryset.filter(is_active=False).update(is_active=True)
+        self.message_user(
+            request,
+            f"{updated} compte(s) approuvé(s).",
+            messages.SUCCESS,
+        )
+
+
 admin.site.unregister(User)
 admin.site.register(User, CustomUserAdmin)
+
 
 class ApiTokenForm(forms.ModelForm):
     class Meta:
@@ -57,6 +95,7 @@ class ApiTokenForm(forms.ModelForm):
             import secrets
             self.fields['key'].initial = secrets.token_hex(32)
         self.fields['key'].widget.attrs['readonly'] = True
+
 
 @admin.register(ApiToken)
 class ApiTokenAdmin(admin.ModelAdmin):
@@ -72,5 +111,4 @@ class ApiTokenAdmin(admin.ModelAdmin):
         super().save_model(request, obj, form, change)
 
     def get_readonly_fields(self, request, obj=None):
-        # 'key' est readonly dans le formulaire, 'created_at' toujours
         return self.readonly_fields
