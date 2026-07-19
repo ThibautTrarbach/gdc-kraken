@@ -41,6 +41,31 @@ ALLOWED_HOSTS = ["localhost", "grecedecanards.fr", "127.0.0.1"]
 
 # Application definition
 
+def _env(name, default=None):
+    return os.environ.get(name, default)
+
+def _env_bool(name, default=False):
+    raw = os.environ.get(name)
+    if raw is None:
+        return default
+    return str(raw).strip().lower() in ("1", "true", "yes", "on")
+
+# --- Auth sociale optionnelle (Discord / Steam) ---
+# AUTH_DISCORD_ENABLED=true + DISCORD_CLIENT_ID + DISCORD_CLIENT_SECRET
+# AUTH_STEAM_ENABLED=true + STEAM_API_KEY
+# Redirects: /accounts/discord/login/callback/ et /accounts/steam/login/callback/
+DISCORD_CLIENT_ID = (_env("DISCORD_CLIENT_ID") or "").strip()
+DISCORD_CLIENT_SECRET = (_env("DISCORD_CLIENT_SECRET") or "").strip()
+STEAM_API_KEY = (_env("STEAM_API_KEY") or "").strip()
+AUTH_DISCORD_ENABLED = _env_bool("AUTH_DISCORD_ENABLED", False)
+AUTH_STEAM_ENABLED = _env_bool("AUTH_STEAM_ENABLED", False)
+
+SOCIAL_AUTH_ENABLED = {
+    "discord": AUTH_DISCORD_ENABLED and bool(DISCORD_CLIENT_ID and DISCORD_CLIENT_SECRET),
+    "steam": AUTH_STEAM_ENABLED and bool(STEAM_API_KEY),
+}
+ANY_SOCIAL_AUTH_ENABLED = any(SOCIAL_AUTH_ENABLED.values())
+
 INSTALLED_APPS = [
     'django.contrib.admin',
     'django.contrib.auth',
@@ -48,8 +73,17 @@ INSTALLED_APPS = [
     'django.contrib.sessions',
     'django.contrib.messages',
     'django.contrib.staticfiles',
+    'django.contrib.sites',
+    'allauth',
+    'allauth.account',
+    'allauth.socialaccount',
     'gdc_storm',
 ]
+
+if SOCIAL_AUTH_ENABLED["discord"]:
+    INSTALLED_APPS.append('allauth.socialaccount.providers.discord')
+if SOCIAL_AUTH_ENABLED["steam"]:
+    INSTALLED_APPS.append('allauth.socialaccount.providers.steam')
 
 MIDDLEWARE = [
     'django.middleware.security.SecurityMiddleware',
@@ -59,6 +93,7 @@ MIDDLEWARE = [
     'django.contrib.auth.middleware.AuthenticationMiddleware',
     'django.contrib.messages.middleware.MessageMiddleware',
     'django.middleware.clickjacking.XFrameOptionsMiddleware',
+    'allauth.account.middleware.AccountMiddleware',
 ]
 
 ROOT_URLCONF = 'gdc_kraken.urls'
@@ -73,6 +108,7 @@ TEMPLATES = [
                 'django.template.context_processors.request',
                 'django.contrib.auth.context_processors.auth',
                 'django.contrib.messages.context_processors.messages',
+                'gdc_storm.context_processors.social_auth_context',
             ],
         },
     },
@@ -138,8 +174,54 @@ STATIC_ROOT = BASE_DIR / 'staticfiles'
 
 DEFAULT_AUTO_FIELD = 'django.db.models.BigAutoField'
 
+LOGIN_URL = '/login/'
 LOGIN_REDIRECT_URL = '/'
 LOGOUT_REDIRECT_URL = '/'
+
+SITE_ID = int(_env("SITE_ID", "1"))
+SITE_DOMAIN = (_env("SITE_DOMAIN") or "").strip() or (
+    ALLOWED_HOSTS[0] if ALLOWED_HOSTS else "localhost"
+)
+SITE_NAME = (_env("SITE_NAME") or "GDC Storm").strip()
+
+AUTHENTICATION_BACKENDS = [
+    'django.contrib.auth.backends.ModelBackend',
+    'allauth.account.auth_backends.AuthenticationBackend',
+]
+
+ACCOUNT_ADAPTER = 'gdc_storm.adapters.AccountAdapter'
+SOCIALACCOUNT_ADAPTER = 'gdc_storm.adapters.SocialAccountAdapter'
+ACCOUNT_LOGIN_METHODS = {'username'}
+ACCOUNT_SIGNUP_FIELDS = ['username*', 'password1*', 'password2*']
+ACCOUNT_EMAIL_VERIFICATION = 'none'
+SOCIALACCOUNT_EMAIL_REQUIRED = False
+SOCIALACCOUNT_EMAIL_VERIFICATION = 'none'
+SOCIALACCOUNT_AUTO_SIGNUP = True
+SOCIALACCOUNT_LOGIN_ON_GET = True
+ACCOUNT_LOGOUT_ON_GET = False
+
+SOCIALACCOUNT_PROVIDERS = {}
+if SOCIAL_AUTH_ENABLED["discord"]:
+    SOCIALACCOUNT_PROVIDERS["discord"] = {
+        "APPS": [
+            {
+                "client_id": DISCORD_CLIENT_ID,
+                "secret": DISCORD_CLIENT_SECRET,
+                "key": "",
+            },
+        ],
+        "SCOPE": ["identify", "email"],
+    }
+if SOCIAL_AUTH_ENABLED["steam"]:
+    SOCIALACCOUNT_PROVIDERS["steam"] = {
+        "APPS": [
+            {
+                "client_id": STEAM_API_KEY,
+                "secret": STEAM_API_KEY,
+                "key": "",
+            },
+        ],
+    }
 
 # Chemins personnalisés pour les fichiers missions et images de mission
 MISSIONS_STORAGE_PATH = os.environ.get('MISSIONS_STORAGE_PATH', 'missions')

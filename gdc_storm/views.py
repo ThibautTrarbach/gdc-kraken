@@ -1,15 +1,21 @@
 from django.contrib.auth import update_session_auth_hash
 from django.contrib.auth.decorators import login_required
-from django.contrib.auth.hashers import check_password
-# Changement de mot de passe utilisateur
+from django.contrib import messages
+from django.shortcuts import render, redirect
+from django.views.decorators.http import require_POST
+
+
 @login_required
 def change_password(request):
+    user = request.user
+    has_password = user.has_usable_password()
+
     if request.method == 'POST':
         old_password = request.POST.get('old_password')
         new_password1 = request.POST.get('new_password1')
         new_password2 = request.POST.get('new_password2')
-        user = request.user
-        if not user.check_password(old_password):
+
+        if has_password and not user.check_password(old_password or ''):
             messages.error(request, "Ancien mot de passe incorrect.")
         elif new_password1 != new_password2:
             messages.error(request, "Les nouveaux mots de passe ne correspondent pas.")
@@ -18,10 +24,112 @@ def change_password(request):
         else:
             user.set_password(new_password1)
             user.save()
-            update_session_auth_hash(request, user)  # Reste connecté
-            messages.success(request, "Mot de passe modifié avec succès.")
+            update_session_auth_hash(request, user)
+            messages.success(
+                request,
+                "Mot de passe défini avec succès." if not has_password else "Mot de passe modifié avec succès.",
+            )
             return redirect('home')
-    return render(request, 'gdc_storm/change_password.html')
+
+    return render(request, 'gdc_storm/change_password.html', {
+        'has_usable_password': has_password,
+    })
+
+
+def pending_approval(request):
+    """Page affichée après création d'un compte social non encore validé."""
+    return render(request, 'gdc_storm/pending_approval.html')
+
+
+@login_required
+def account_connections(request):
+    from allauth.socialaccount.models import SocialAccount
+
+    from gdc_storm.social_auth import (
+        get_social_auth_enabled,
+        provider_label,
+    )
+
+    linked = {
+        sa.provider: sa
+        for sa in SocialAccount.objects.filter(user=request.user)
+    }
+    enabled = get_social_auth_enabled()
+    providers = []
+    for provider_id in ("discord", "steam"):
+        account = linked.get(provider_id)
+        is_enabled = enabled.get(provider_id, False)
+        if not is_enabled and not account:
+            continue
+        display_name = ""
+        if account:
+            extra = account.extra_data or {}
+            display_name = (
+                extra.get("username")
+                or extra.get("global_name")
+                or extra.get("personaname")
+                or extra.get("name")
+                or account.uid
+            )
+        providers.append({
+            "id": provider_id,
+            "label": provider_label(provider_id),
+            "enabled": is_enabled,
+            "linked": account is not None,
+            "account": account,
+            "display_name": display_name,
+            "can_disconnect": _can_disconnect_provider(request.user, provider_id, linked),
+        })
+
+    return render(request, 'gdc_storm/account_connections.html', {
+        'connection_providers': providers,
+        'has_usable_password': request.user.has_usable_password(),
+    })
+
+
+def _can_disconnect_provider(user, provider_id, linked_map):
+    """Refuse de délier si c'est la dernière méthode d'accès."""
+    if provider_id not in linked_map:
+        return False
+    other_links = [p for p in linked_map if p != provider_id]
+    return user.has_usable_password() or bool(other_links)
+
+
+@login_required
+@require_POST
+def disconnect_social_account(request, provider):
+    from allauth.socialaccount.models import SocialAccount
+
+    from gdc_storm.social_auth import provider_label
+
+    if provider not in ("discord", "steam"):
+        messages.error(request, "Service inconnu.")
+        return redirect('account_connections')
+
+    linked = {
+        sa.provider: sa
+        for sa in SocialAccount.objects.filter(user=request.user)
+    }
+    account = linked.get(provider)
+    if not account:
+        messages.error(request, "Aucune connexion à délier.")
+        return redirect('account_connections')
+
+    if not _can_disconnect_provider(request.user, provider, linked):
+        messages.error(
+            request,
+            "Impossible de délier : définissez d'abord un mot de passe "
+            "ou gardez au moins une autre connexion.",
+        )
+        return redirect('account_connections')
+
+    account.delete()
+    messages.success(
+        request,
+        f"Connexion {provider_label(provider)} déliée.",
+    )
+    return redirect('account_connections')
+
 
 import re
 import uuid
