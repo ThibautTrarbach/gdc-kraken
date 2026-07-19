@@ -82,19 +82,24 @@ class AnalyzePboUploadTest(TestCase):
 
 
 class UploadTempPathSafetyTest(TestCase):
-    def test_rejects_path_outside_temp(self):
-        self.assertFalse(is_safe_upload_temp_path('/etc/passwd'))
-        self.assertFalse(is_safe_upload_temp_path(''))
-
     def test_accepts_existing_file_in_temp(self):
-        temp_dir = get_upload_temp_dir()
+        user = User.objects.create_user(username='tmpuser', password='pass')
+        temp_dir = get_upload_temp_dir(user)
         path = os.path.join(temp_dir, 'safety_test.pbo')
         with open(path, 'wb') as f:
             f.write(b'x')
         try:
-            self.assertTrue(is_safe_upload_temp_path(path))
+            self.assertTrue(is_safe_upload_temp_path(path, user))
+            other = User.objects.create_user(username='other', password='pass')
+            self.assertFalse(is_safe_upload_temp_path(path, other))
         finally:
             os.remove(path)
+
+    def test_rejects_path_outside_temp(self):
+        user = User.objects.create_user(username='tmpuser2', password='pass')
+        self.assertFalse(is_safe_upload_temp_path('/etc/passwd', user))
+        self.assertFalse(is_safe_upload_temp_path(''))
+        self.assertFalse(is_safe_upload_temp_path('/etc/passwd'))
 
 
 class UploadEndpointsTest(TestCase):
@@ -136,9 +141,10 @@ class UploadEndpointsTest(TestCase):
                 b'x',
                 content_type='application/octet-stream',
             )
-            for i in range(UPLOAD_ANALYZE_MAX_FILES + 1)
+            for i in range(3)
         ]
-        resp = self.client.post(reverse('upload_analyze'), {'pbo_files': files})
+        with patch('gdc_storm.views.UPLOAD_ANALYZE_MAX_FILES', 2):
+            resp = self.client.post(reverse('upload_analyze'), {'pbo_files': files})
         self.assertEqual(resp.status_code, 400)
         self.assertIn('Trop de fichiers', resp.json()['error'])
 
@@ -156,7 +162,7 @@ class UploadEndpointsTest(TestCase):
         )
         mock_create.return_value = (mission, None)
 
-        temp_dir = get_upload_temp_dir()
+        temp_dir = get_upload_temp_dir(self.user)
         filename = 'CPC-CO[20]-FreshMission-V1.altis.pbo'
         temp_file_name = f'testuuid_{filename}'
         temp_file_path = os.path.join(temp_dir, temp_file_name)
@@ -195,7 +201,7 @@ class UploadEndpointsTest(TestCase):
             version='1',
             map='altis',
         )
-        temp_dir = get_upload_temp_dir()
+        temp_dir = get_upload_temp_dir(self.user)
         filename = 'CPC-CO[20]-TestMission-V2.altis.pbo'
         temp_file_name = f'testuuid_{filename}'
         temp_file_path = os.path.join(temp_dir, temp_file_name)

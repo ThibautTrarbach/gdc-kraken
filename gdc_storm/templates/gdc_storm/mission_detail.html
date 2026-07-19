@@ -1,5 +1,5 @@
 {% extends 'gdc_storm/base.html' %}
-{% load static dict_extras %}
+{% load static dict_extras briefing_filters %}
 {% block title %}Détail de la mission - GDC Storm{% endblock %}
 {% block content %}
 {% if messages %}
@@ -136,7 +136,7 @@
                         {% for item in mission.briefing %}
                             <li style="margin-bottom:28px;">
                                 <div style="display:inline-block;background:#1976d2;color:#fff;padding:6px 18px;font-weight:700;font-size:1.08em;border-radius:8px;box-shadow:1px 2px 8px #0002;transform:skew(-5deg);margin-bottom:8px;">{{ item.name }}</div><br>
-                                <span style="line-height: 1.5;">{{ item.content|safe }}</span>
+                                <span style="line-height: 1.5;">{{ item.content|safe_briefing }}</span>
                             </li>
                         {% empty %}
                             <li>Aucun briefing structuré trouvé.</li>

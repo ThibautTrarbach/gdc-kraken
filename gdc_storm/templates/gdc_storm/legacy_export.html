@@ -73,10 +73,22 @@
                 headers: {"X-CSRFToken": '{{ csrf_token }}', "Content-Type": "application/x-www-form-urlencoded"},
                 body: "linkedUser=" + encodeURIComponent("{{ selected_user }}")
             }).then(r => r.json()).then(data => {
+                const el = document.getElementById('legacy-linkeduser-msg');
                 if(data.success && data.password) {
-                    document.getElementById('legacy-linkeduser-msg').innerHTML = '<span style="color:green">'+data.message+'<br>Mot de passe : <b>'+data.password+'</b></span>';
+                    el.textContent = '';
+                    const span = document.createElement('span');
+                    span.style.color = 'green';
+                    span.appendChild(document.createTextNode((data.message || '') + ' Mot de passe : '));
+                    const b = document.createElement('b');
+                    b.textContent = data.password;
+                    span.appendChild(b);
+                    el.appendChild(span);
                 } else {
-                    document.getElementById('legacy-linkeduser-msg').innerHTML = '<span style="color:red">'+data.error+'</span>';
+                    el.textContent = '';
+                    const span = document.createElement('span');
+                    span.style.color = 'red';
+                    span.textContent = data.error || 'Erreur';
+                    el.appendChild(span);
                 }
             });
         };

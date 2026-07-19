@@ -8,7 +8,7 @@ from django.test import Client, TestCase
 from django.urls import clear_url_caches
 
 from gdc_storm.models import GameSession, Mission
-from gdc_storm.views import get_upload_temp_dir, save_uploaded_pbo_to_temp
+from gdc_storm.views import get_upload_temp_dir, is_safe_upload_temp_path, save_uploaded_pbo_to_temp
 
 
 class CriticalSecurityRegressionTests(TestCase):
@@ -48,15 +48,17 @@ class CriticalSecurityRegressionTests(TestCase):
         uploaded = MagicMock()
         uploaded.name = '../../../evil_critical.pbo'
         uploaded.chunks = MagicMock(return_value=[b'PBOFAKE'])
-        temp_dir = os.path.realpath(get_upload_temp_dir())
-        path, _name, filename = save_uploaded_pbo_to_temp(uploaded)
+        path, _name, filename = save_uploaded_pbo_to_temp(uploaded, self.regular)
         try:
             self.assertEqual(filename, 'evil_critical.pbo')
+            temp_dir = os.path.realpath(get_upload_temp_dir(self.regular))
             self.assertEqual(
                 os.path.commonpath([temp_dir, os.path.realpath(path)]),
                 temp_dir,
             )
             self.assertTrue(os.path.isfile(path))
+            self.assertFalse(is_safe_upload_temp_path(path, self.owner))
+            self.assertTrue(is_safe_upload_temp_path(path, self.regular))
         finally:
             if os.path.isfile(path):
                 os.remove(path)

@@ -26,7 +26,9 @@ services:
   storm:
     build: .
     ports:
-      - "6130:8000"
+      # Localhost only : Traefik joignit storm via le réseau Docker (pas ce port).
+      # Évite l'accès public direct tout en gardant le debug local + X-Forwarded-*.
+      - "127.0.0.1:6130:8000"
     labels:
       - "traefik.enable=true"
       - "traefik.http.routers.web.rule=Host(`${DOMAIN}`)"

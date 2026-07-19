@@ -1,5 +1,33 @@
-import re
 import logging
+import re
+
+# Briefing Arma : balises utiles au rendu, sans event handlers / scripts.
+BRIEFING_ALLOWED_TAGS = frozenset({
+    'br', 'b', 'u', 'i', 'strong', 'em', 'p', 'h1', 'h2', 'h3', 'h4',
+    'a', 'img', 'font', 'span', 'div', 'ul', 'ol', 'li',
+})
+BRIEFING_ALLOWED_ATTRIBUTES = {
+    'a': ['href', 'title', 'name'],
+    'img': ['src', 'alt', 'width', 'height'],
+    'font': ['color', 'size', 'face'],
+}
+BRIEFING_ALLOWED_PROTOCOLS = frozenset({'http', 'https', 'mailto'})
+
+
+def sanitize_briefing_html(html):
+    """Nettoie le HTML de briefing (XSS) en conservant le formatage Arma usuel."""
+    if not html:
+        return html or ''
+    import bleach
+
+    return bleach.clean(
+        html,
+        tags=BRIEFING_ALLOWED_TAGS,
+        attributes=BRIEFING_ALLOWED_ATTRIBUTES,
+        protocols=BRIEFING_ALLOWED_PROTOCOLS,
+        strip=True,
+    )
+
 
 def is_sqm_binarized(pbo):
     """Retourne True si mission.sqm est binarisé (ne commence pas par 'version'), False sinon, None si absent."""
@@ -119,16 +147,16 @@ def extract_briefing_from_pbo(pbo):
                         attrs = m.group(1)
                         img_path_match = _re.search(r"image\s*=\s*'([^']+)'", attrs)
                         if not img_path_match:
-                            return m.group(0)
+                            return ''
                         img_path = img_path_match.group(1)
                         # Recherche du fichier image dans le pbo
                         try:
                             img_entry = pbo[img_path]
                         except Exception:
-                            return m.group(0)  # Image non trouvée dans le pbo
+                            return ''  # Image non trouvée dans le pbo
                         ext = os.path.splitext(img_path)[1].lower()
                         if ext not in ['.jpg', '.jpeg', '.png']:
-                            return m.group(0)
+                            return ''
                         # Sauvegarde de l'image dans le dossier missions/loadscreens/briefing/
                         img_filename = os.path.join(settings.MISSIONS_IMAGES_STORAGE_PATH, 'briefing', f"{uuid.uuid4()}{ext}")
                         os.makedirs(os.path.join(default_storage.location, settings.MISSIONS_IMAGES_STORAGE_PATH, 'briefing'), exist_ok=True)
@@ -141,6 +169,7 @@ def extract_briefing_from_pbo(pbo):
                     item_content = _re.sub(r"<img([^>]*)>", img_save_repl, item_content)
                     # Suppression des lignes vides en fin de contenu
                     item_content = item_content.rstrip('\n').rstrip('\r')
+                    item_content = sanitize_briefing_html(item_content)
                     briefing_items.append({"name": name, "content": item_content})
             except Exception as e:
                 logging.error(f"Erreur lors de la lecture de {pbo_item.filename} dans le pbo : {e}")

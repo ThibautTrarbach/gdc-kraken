@@ -713,7 +713,7 @@ class RecupEndpointsTest(TestCase):
         )
         mock_create.return_value = (mission, None)
 
-        temp_dir = get_upload_temp_dir()
+        temp_dir = get_upload_temp_dir(self.user)
         filename = 'CPC-CO[20]-FreshRecup-V1.altis.pbo'
         temp_file_name = f'testuuid_{filename}'
         temp_file_path = os.path.join(temp_dir, temp_file_name)
@@ -760,7 +760,7 @@ class RecupEndpointsTest(TestCase):
         )
         mock_update.return_value = (existing, None)
 
-        temp_dir = get_upload_temp_dir()
+        temp_dir = get_upload_temp_dir(self.user)
         filename = 'CPC-CO[20]-TestMission-V2.altis.pbo'
         temp_file_name = f'testuuid_{filename}'
         temp_file_path = os.path.join(temp_dir, temp_file_name)
@@ -799,7 +799,7 @@ class RecupEndpointsTest(TestCase):
             version='1',
             map='altis',
         )
-        temp_dir = get_upload_temp_dir()
+        temp_dir = get_upload_temp_dir(self.user)
         filename = 'CPC-CO[20]-TestMission-V1.malden.pbo'
         temp_file_name = f'testuuid_{filename}'
         temp_file_path = os.path.join(temp_dir, temp_file_name)

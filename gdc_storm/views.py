@@ -19,17 +19,23 @@ def change_password(request):
             messages.error(request, "Ancien mot de passe incorrect.")
         elif new_password1 != new_password2:
             messages.error(request, "Les nouveaux mots de passe ne correspondent pas.")
-        elif not new_password1 or len(new_password1) < 6:
-            messages.error(request, "Le nouveau mot de passe doit contenir au moins 6 caractères.")
         else:
-            user.set_password(new_password1)
-            user.save()
-            update_session_auth_hash(request, user)
-            messages.success(
-                request,
-                "Mot de passe défini avec succès." if not has_password else "Mot de passe modifié avec succès.",
-            )
-            return redirect('home')
+            from django.contrib.auth.password_validation import validate_password
+            from django.core.exceptions import ValidationError
+            try:
+                validate_password(new_password1, user=user)
+            except ValidationError as exc:
+                for msg in exc.messages:
+                    messages.error(request, msg)
+            else:
+                user.set_password(new_password1)
+                user.save()
+                update_session_auth_hash(request, user)
+                messages.success(
+                    request,
+                    "Mot de passe défini avec succès." if not has_password else "Mot de passe modifié avec succès.",
+                )
+                return redirect('home')
 
     return render(request, 'gdc_storm/change_password.html', {
         'has_usable_password': has_password,
@@ -260,17 +266,22 @@ def clean_temp_files(temp_dir, max_age_seconds=3600):
             logging.warning(f"Erreur lors du nettoyage du fichier temporaire {temp_file}: {e}")
 
 
-def get_upload_temp_dir():
-    temp_dir = os.path.join(tempfile.gettempdir(), 'gdc_storm')
+def get_upload_temp_dir(user=None):
+    """Répertoire temp global, ou sous-dossier par utilisateur (anti-IDOR)."""
+    base = os.path.join(tempfile.gettempdir(), 'gdc_storm')
+    if user is not None and getattr(user, 'is_authenticated', False) and getattr(user, 'pk', None):
+        temp_dir = os.path.join(base, f'u{user.pk}')
+    else:
+        temp_dir = base
     os.makedirs(temp_dir, exist_ok=True)
     return temp_dir
 
 
-def is_safe_upload_temp_path(temp_file_path):
-    """Refuse les chemins hors du répertoire temp gdc_storm (anti path traversal)."""
-    if not temp_file_path:
+def is_safe_upload_temp_path(temp_file_path, user=None):
+    """Refuse chemins hors du temp user (anti path traversal + IDOR cross-user)."""
+    if not temp_file_path or user is None or not getattr(user, 'pk', None):
         return False
-    temp_dir = os.path.realpath(get_upload_temp_dir())
+    temp_dir = os.path.realpath(get_upload_temp_dir(user))
     real_path = os.path.realpath(temp_file_path)
     try:
         return os.path.commonpath([temp_dir, real_path]) == temp_dir and os.path.isfile(real_path)
@@ -278,14 +289,14 @@ def is_safe_upload_temp_path(temp_file_path):
         return False
 
 
-def save_uploaded_pbo_to_temp(uploaded_file):
+def save_uploaded_pbo_to_temp(uploaded_file, user=None):
     """Sauve un UploadedFile dans le répertoire temp et retourne (temp_file_path, temp_file_name, filename)."""
     raw_name = uploaded_file.name or ''
     filename = os.path.basename(raw_name.replace('\\', '/'))
     if not filename or filename in ('.', '..'):
         raise ValueError("Nom de fichier upload invalide.")
     temp_file_name = f"{uuid.uuid4()}_{filename}"
-    temp_dir = get_upload_temp_dir()
+    temp_dir = get_upload_temp_dir(user)
     temp_file_path = os.path.join(temp_dir, temp_file_name)
     if os.path.dirname(os.path.realpath(temp_file_path)) != os.path.realpath(temp_dir):
         raise ValueError("Chemin temporaire hors répertoire autorisé.")
@@ -293,6 +304,18 @@ def save_uploaded_pbo_to_temp(uploaded_file):
         for chunk in uploaded_file.chunks():
             destination.write(chunk)
     return temp_file_path, temp_file_name, filename
+
+
+def safe_internal_redirect(request, candidate, fallback_name):
+    """Redirige uniquement vers une URL interne (anti open-redirect)."""
+    from django.utils.http import url_has_allowed_host_and_scheme
+    if candidate and url_has_allowed_host_and_scheme(
+        url=candidate,
+        allowed_hosts={request.get_host()},
+        require_https=request.is_secure(),
+    ):
+        return redirect(candidate)
+    return redirect(fallback_name)
 
 
 def save_pbo_to_storage(temp_file_path, filename):
@@ -765,7 +788,7 @@ def upload_mission(request):
     """Page d'upload multi-PBO (analyse + récap + commit via endpoints JSON)."""
     if not user_is_mission_maker(request.user):
         return HttpResponse("Vous n'avez pas le droit de publier une mission.", status=403)
-    clean_temp_files(get_upload_temp_dir())
+    clean_temp_files(get_upload_temp_dir(request.user))
     return render(request, 'gdc_storm/upload_mission.html', {
         'max_files': UPLOAD_ANALYZE_MAX_FILES,
     })
@@ -778,7 +801,7 @@ def upload_analyze(request):
     if not user_is_mission_maker(request.user):
         return _mission_maker_forbidden_json()
 
-    clean_temp_files(get_upload_temp_dir())
+    clean_temp_files(get_upload_temp_dir(request.user))
     files = list(request.FILES.getlist('pbo_files'))
     if not files:
         # Compat: un seul champ pbo_file
@@ -814,7 +837,7 @@ def upload_analyze(request):
             })
             continue
         try:
-            temp_file_path, temp_file_name, filename = save_uploaded_pbo_to_temp(uploaded)
+            temp_file_path, temp_file_name, filename = save_uploaded_pbo_to_temp(uploaded, request.user)
         except ValueError as e:
             items.append({
                 'id': str(uuid.uuid4()),
@@ -890,7 +913,7 @@ def upload_commit(request):
             results.append(result)
             continue
 
-        if not is_safe_upload_temp_path(temp_file_path):
+        if not is_safe_upload_temp_path(temp_file_path, request.user):
             result['error'] = "Fichier temporaire manquant, expiré ou chemin invalide."
             results.append(result)
             continue
@@ -999,7 +1022,7 @@ def recup_missions(request):
     """Page de récupération multi-PBO depuis le cache joueur (utilisateur actif requis)."""
     if not user_can_recup(request.user):
         return HttpResponse("Vous n'avez pas le droit de récupérer une mission.", status=403)
-    clean_temp_files(get_upload_temp_dir())
+    clean_temp_files(get_upload_temp_dir(request.user))
     return render(request, 'gdc_storm/recup_missions.html', {
         'max_files': RECUP_ANALYZE_MAX_FILES,
     })
@@ -1255,7 +1278,7 @@ def recup_analyze(request):
     """Analyse un ou plusieurs PBO pour la récupération (même logique doublons/versions que l'upload)."""
     if not user_can_recup(request.user):
         return _recup_forbidden_json()
-    clean_temp_files(get_upload_temp_dir())
+    clean_temp_files(get_upload_temp_dir(request.user))
     files = list(request.FILES.getlist('pbo_files'))
     if not files:
         single = request.FILES.get('pbo_file')
@@ -1290,7 +1313,7 @@ def recup_analyze(request):
             })
             continue
         try:
-            temp_file_path, temp_file_name, filename = save_uploaded_pbo_to_temp(uploaded)
+            temp_file_path, temp_file_name, filename = save_uploaded_pbo_to_temp(uploaded, request.user)
         except ValueError as e:
             items.append({
                 'id': str(uuid.uuid4()),
@@ -1366,7 +1389,7 @@ def recup_commit(request):
             results.append(result)
             continue
 
-        if not is_safe_upload_temp_path(temp_file_path):
+        if not is_safe_upload_temp_path(temp_file_path, request.user):
             result['error'] = "Fichier temporaire manquant, expiré ou chemin invalide."
             results.append(result)
             continue
@@ -2364,13 +2387,17 @@ def session_detail(request, session_id):
     missions_candidates = []
     show_associate_btn = False
     no_mission_found = False
-    # Droits d'édition verdict (mêmes règles UI / serveur)
+    # Droits d'édition verdict : superuser, ou participant si encore INCONNU
     user_can_edit_verdict = False
     if request.user.is_authenticated:
         if request.user.is_superuser:
             user_can_edit_verdict = True
         elif session.verdict == session.VERDICT_INCONNU:
-            user_can_edit_verdict = True
+            player_ids = list(request.user.players.values_list('id', flat=True))
+            if player_ids and GameSessionPlayer.objects.filter(
+                session_id=session.id, player_id__in=player_ids
+            ).exists():
+                user_can_edit_verdict = True
     # Gestion du POST pour le verdict
     if request.method == 'POST' and 'set_verdict' in request.POST:
         if not user_can_edit_verdict:
@@ -2382,9 +2409,16 @@ def session_detail(request, session_id):
                 session.save()
                 invalidate_session_list_cache()
                 messages.success(request, "Verdict mis à jour.")
-                # Recalcul après changement (ex. INCONNU -> SUCCES retire le droit non-admin)
+                # Recalcul après changement
                 user_can_edit_verdict = request.user.is_authenticated and (
-                    request.user.is_superuser or session.verdict == session.VERDICT_INCONNU
+                    request.user.is_superuser
+                    or (
+                        session.verdict == session.VERDICT_INCONNU
+                        and GameSessionPlayer.objects.filter(
+                            session_id=session.id,
+                            player_id__in=request.user.players.values_list('id', flat=True),
+                        ).exists()
+                    )
                 )
             else:
                 messages.error(request, "Valeur de verdict invalide.")
@@ -3005,7 +3039,7 @@ def role_categories(request):
                     )
                 else:
                     messages.info(request, "Aucun changement.")
-            return redirect(next_url)
+            return safe_internal_redirect(request, next_url, 'role_categories')
 
         if action == 'reset_one':
             role_id = request.POST.get('role_id')
@@ -3019,7 +3053,7 @@ def role_categories(request):
                     request,
                     f"« {rc.role_name} » réinitialisé (catégorie = nom brut).",
                 )
-            return redirect(next_url)
+            return safe_internal_redirect(request, next_url, 'role_categories')
 
     q = (request.GET.get('q') or '').strip()
     filter_uncategorized = request.GET.get('uncategorized') == '1'
@@ -3148,7 +3182,11 @@ def player_admin(request):
                     messages.error(request, "Joueur introuvable.")
                 except IntegrityError as exc:
                     messages.error(request, str(exc))
-            return redirect(next_url if request.GET else 'player_admin')
+            return safe_internal_redirect(
+                request,
+                next_url if request.GET else reverse('player_admin'),
+                'player_admin',
+            )
 
         if action == 'link_user':
             ids = request.POST.getlist('player_ids')
@@ -3170,7 +3208,11 @@ def player_admin(request):
                         request,
                         f"{len(players)} joueur(s) lié(s) à « {user_obj.username} ».",
                     )
-            return redirect(next_url if request.GET else 'player_admin')
+            return safe_internal_redirect(
+                request,
+                next_url if request.GET else reverse('player_admin'),
+                'player_admin',
+            )
 
         if action == 'unlink_user':
             player_id = request.POST.get('player_id')
@@ -3183,7 +3225,7 @@ def player_admin(request):
                 request,
                 f"« {player.name} » délié de « {user_obj.username} ».",
             )
-            return redirect(next_url)
+            return safe_internal_redirect(request, next_url, 'player_admin')
 
     q = (request.GET.get('q') or '').strip()
     filter_unlinked = request.GET.get('unlinked') == '1'

@@ -62,14 +62,14 @@ class ChangePasswordTests(TestCase):
         response = self.client.post(
             reverse("change_password"),
             {
-                "new_password1": "secret12",
-                "new_password2": "secret12",
+                "new_password1": "GdcStorm-Pass9!",
+                "new_password2": "GdcStorm-Pass9!",
             },
         )
         self.assertRedirects(response, reverse("home"))
         user.refresh_from_db()
         self.assertTrue(user.has_usable_password())
-        self.assertTrue(user.check_password("secret12"))
+        self.assertTrue(user.check_password("GdcStorm-Pass9!"))
 
     def test_change_password_requires_old_when_usable(self):
         user = User.objects.create_user(username="local_user", password="oldpass1")
@@ -79,8 +79,8 @@ class ChangePasswordTests(TestCase):
             reverse("change_password"),
             {
                 "old_password": "wrong",
-                "new_password1": "secret12",
-                "new_password2": "secret12",
+                "new_password1": "GdcStorm-Pass9!",
+                "new_password2": "GdcStorm-Pass9!",
             },
         )
         self.assertEqual(response.status_code, 200)
