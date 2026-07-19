@@ -1,10 +1,9 @@
 import datetime
+from functools import wraps
 from django.views.decorators.csrf import csrf_exempt
 from django.views.decorators.http import require_http_methods
 from django.http import JsonResponse
-from .models import GameSession, GameSessionPlayer, Player
-from functools import wraps
-from .models import ApiToken
+from .models import GameSession, GameSessionPlayer, Player, RoleCategory, ApiToken
 from .utils import find_mission_for_session, invalidate_session_list_cache
 import json
 
@@ -106,6 +105,7 @@ def api_add_gamesession_player(request, session_id):
     except GameSession.DoesNotExist:
         return JsonResponse({'success': False, 'error': 'GameSession introuvable'}, status=404)
     player_obj, _ = Player.objects.get_or_create(name=player_name)
+    RoleCategory.objects.get_or_create(role_name=role, defaults={'category': role})
     gsp = GameSessionPlayer.objects.create(session=session, player=player_obj, role=role)
     invalidate_session_list_cache()
     return JsonResponse({'success': True, 'player_id': gsp.id, 'player_db_id': player_obj.id})

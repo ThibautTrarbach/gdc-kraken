@@ -146,7 +146,8 @@ import secrets
 
 from django.core.cache import cache
 from django.db import IntegrityError
-from django.db.models import Count, Max, Q
+from django.db.models import Count, Max, Q, F
+from django.db.models.functions import TruncMonth, ExtractWeekDay, ExtractHour
 from django.shortcuts import render, get_object_or_404, redirect
 from django.http import HttpResponse, JsonResponse
 from django.urls import reverse
@@ -159,6 +160,8 @@ from django.conf import settings
 from django.utils import timezone
 from django.utils.dateparse import parse_datetime
 from functools import wraps
+from datetime import timedelta
+from calendar import month_abbr
 
 UPLOAD_ANALYZE_MAX_FILES = 100
 RECUP_ANALYZE_MAX_FILES = 1500
@@ -194,7 +197,7 @@ def get_recup_user():
         user.save(update_fields=['password'])
     return user
 
-from .models import Mission, MapName, Player, GameSession, GameSessionPlayer, ApiToken
+from .models import Mission, MapName, Player, GameSession, GameSessionPlayer, RoleCategory, ApiToken
 from .models import LegacyRole, LegacyMission, LegacyImportError, LegacyGameSession, LegacyMapNames, LegacyGameSessionPlayerRole, LegacyPlayers
 from .forms import MissionOwnerForm, MissionStatusForm
 from gdc_storm.utils import (
@@ -203,8 +206,26 @@ from gdc_storm.utils import (
     recup_parse_mission_filename,
     invalidate_session_list_cache,
     SESSION_LIST_CACHE_KEY,
+    STATS_CACHE_KEY,
+    ROLE_USAGE_CACHE_KEY,
+)
+from gdc_storm.stats_helpers import (
+    session_win_rate,
+    player_survival_stats,
+    role_breakdown,
+    duration_stats,
+    avg_players_survivors,
+    top_players_for_gsp,
+    top_maps_for_sessions,
+    top_missions_for_sessions,
+    published_missions_win_rate,
 )
 from gdc_storm.pbo_extract import is_sqm_binarized, extract_mission_data_from_pbo, extract_briefing_from_pbo
+from django.core.paginator import Paginator
+
+STATS_CACHE_TTL = 300
+STATS_MIN_SESSIONS_FOR_RATIO = 5
+STATS_MIN_DECISIVE_FOR_MAP_WR = 5
 
 
 # Home page view
@@ -1625,16 +1646,10 @@ def mission_detail(request, mission_id):
         mission.game_sessions.all()
     ).order_by('-start_time')
     sessions_data = []
-    succes_count = 0
-    echec_count = 0
     for session in sessions:
         duration_min = None
         if session.start_time and session.end_time:
             duration_min = int((session.end_time - session.start_time).total_seconds() // 60)
-        if session.verdict == GameSession.VERDICT_SUCCES:
-            succes_count += 1
-        elif session.verdict == GameSession.VERDICT_ECHEC:
-            echec_count += 1
         sessions_data.append({
             'id': session.id,
             'name': session.name,
@@ -1645,11 +1660,13 @@ def mission_detail(request, mission_id):
             'players_count': session.players_count,
             'vivant_count': session.vivant_count,
         })
-    decisive = succes_count + echec_count
-    if decisive:
-        win_rate_display = f'{round(100 * succes_count / decisive)} % ({succes_count}/{decisive})'
-    else:
-        win_rate_display = '—'
+    sessions_qs = mission.game_sessions.all()
+    win_stats = session_win_rate(sessions_qs)
+    dur_stats = duration_stats(sessions)
+    avg_stats = avg_players_survivors(sessions_data)
+    gsp_qs = GameSessionPlayer.objects.filter(session__mission=mission)
+    roles = role_breakdown(gsp_qs, limit=5)
+    top_players = top_players_for_gsp(gsp_qs, limit=5)
     return render(request, 'gdc_storm/mission_detail.html', {
         'mission': mission,
         'success': success,
@@ -1659,7 +1676,14 @@ def mission_detail(request, mission_id):
         'status_form': status_form,
         'owner_form': owner_form,
         'sessions_data': sessions_data,
-        'win_rate_display': win_rate_display,
+        'win_rate_display': win_stats['win_rate_display'],
+        'detail_stats': {
+            **win_stats,
+            **dur_stats,
+            **avg_stats,
+            **roles,
+            'top_players': top_players,
+        },
     })
 
 # Delete mission view
@@ -1794,17 +1818,22 @@ def user_profile(request, user_id):
     for gsp in gamesession_players:
         user_status_by_session_id[gsp.session_id] = gsp.status
 
-    # Dead alive ratio
-    # Out off previous loop to avoid total alive + dead to be higher than total missions played by the player
-    alive, dead = 0, 0
-    for v in user_status_by_session_id.values():
-        if v == 'MORT':
-            dead += 1
-        else:
-            alive += 1
-    ratio = round(alive/dead, 2) if dead > 0 else "inf."
-    dead_alive_ratio = {"alive" : alive, "dead" : dead, "ratio" : ratio}
-    
+    survival = player_survival_stats(user_status_by_session_id)
+    dead_alive_ratio = {
+        'alive': survival['alive'],
+        'dead': survival['dead'],
+        'ratio': survival['ratio_display'],
+        'survival_pct': survival['survival_pct'],
+    }
+    sessions_qs = GameSession.objects.filter(id__in=session_ids)
+    win_stats = session_win_rate(sessions_qs)
+    dur_stats = duration_stats(sessions)
+    roles = role_breakdown(gamesession_players, limit=5)
+    top_maps = top_maps_for_sessions(sessions_qs, get_map_display, limit=5)
+    published_wr = published_missions_win_rate(
+        Mission.objects.filter(user=user_profile)
+    )
+
     context = {
         'user_profile': user_profile,
         'user_role': get_user_role(user_profile),
@@ -1828,6 +1857,15 @@ def user_profile(request, user_id):
         'filter_nom': filter_nom,
         'filter_carte': filter_carte,
         'filter_verdict': filter_verdict,
+        'detail_stats': {
+            **win_stats,
+            **dur_stats,
+            **roles,
+            'top_maps': top_maps,
+            'survival_pct': survival['survival_pct'],
+            'published_win_rate_display': published_wr['win_rate_display'],
+            'published_sessions_count': published_wr['sessions_count'],
+        },
     }
     return render(request, 'gdc_storm/user_profile.html', context)
 
@@ -2179,17 +2217,18 @@ def player_detail(request, player_id):
     elif sort == 'verdict':
         sessions_data.sort(key=lambda x: (x['session'].verdict or '').lower(), reverse=reverse_order)
     status_by_session_id = {gsp.session_id: gsp.status for gsp in gamesession_players}
-
-    # Dead alive ratio
-    # Out off previous loop to avoid total alive + dead to be higher than total missions played by the player
-    alive, dead = 0, 0
-    for v in status_by_session_id.values():
-        if v == 'MORT':
-            dead += 1
-        else:
-            alive += 1
-    ratio = round(alive/dead, 2) if dead > 0 else "inf."
-    dead_alive_ratio = {"alive" : alive, "dead" : dead, "ratio" : ratio}
+    survival = player_survival_stats(status_by_session_id)
+    dead_alive_ratio = {
+        'alive': survival['alive'],
+        'dead': survival['dead'],
+        'ratio': survival['ratio_display'],
+        'survival_pct': survival['survival_pct'],
+    }
+    sessions_qs = GameSession.objects.filter(id__in=session_ids)
+    win_stats = session_win_rate(sessions_qs)
+    dur_stats = duration_stats(sessions)
+    roles = role_breakdown(gamesession_players, limit=5)
+    top_maps = top_maps_for_sessions(sessions_qs, get_map_display, limit=5)
     return render(request, 'gdc_storm/player_detail.html', {
         'player': player,
         'sessions_played': sessions_played,
@@ -2200,6 +2239,13 @@ def player_detail(request, player_id):
         'status_by_session_id': status_by_session_id,
         'sort': sort,
         'order': order,
+        'detail_stats': {
+            **win_stats,
+            **dur_stats,
+            **roles,
+            'top_maps': top_maps,
+            'survival_pct': survival['survival_pct'],
+        },
     })
 
 @login_required
@@ -2453,15 +2499,26 @@ def map_detail(request, map_id):
             'players_count': session.players_count,
             'vivant_count': session.vivant_count,
         })
-    # Statistiques
-    missions_count = missions.count()
-    sessions_count = sessions.count()
+    sessions_qs = GameSession.objects.filter(map=map_obj.code_name)
+    win_stats = session_win_rate(sessions_qs)
+    dur_stats = duration_stats(sessions)
+    avg_stats = avg_players_survivors(sessions_data)
+    gsp_qs = GameSessionPlayer.objects.filter(session__map=map_obj.code_name)
+    roles = role_breakdown(gsp_qs, limit=5)
+    top_missions = top_missions_for_sessions(sessions_qs, limit=5)
     context = {
         'map': map_obj,
         'missions': missions,
         'sessions_data': sessions_data,
-        'missions_count': missions_count,
-        'sessions_count': sessions_count,
+        'missions_count': missions.count(),
+        'sessions_count': sessions.count(),
+        'detail_stats': {
+            **win_stats,
+            **dur_stats,
+            **avg_stats,
+            **roles,
+            'top_missions': top_missions,
+        },
     }
     return render(request, 'gdc_storm/map_detail.html', context)
 
@@ -2498,4 +2555,516 @@ def map_list(request):
         'maps': map_data,
         'sort': sort,
         'order': order
+    })
+
+
+def _build_stats_context():
+    """Agrège toutes les statistiques globales pour la page Stats."""
+    map_display_cache = {m.code_name: m.display_name for m in MapName.objects.all()}
+
+    # --- KPIs ---
+    missions_count = Mission.objects.count()
+    sessions_count = GameSession.objects.count()
+    players_count = Player.objects.count()
+    users_count = User.objects.filter(is_active=True).count()
+
+    missions_by_status = {
+        row['status']: row['c']
+        for row in Mission.objects.values('status').annotate(c=Count('id'))
+    }
+    status_labels = dict(Mission.STATUS_CHOICES)
+    missions_status_chart = {
+        'labels': [status_labels.get(k, k) for k in missions_by_status.keys()],
+        'data': list(missions_by_status.values()),
+    }
+
+    missions_by_type = {
+        row['type']: row['c']
+        for row in Mission.objects.values('type').annotate(c=Count('id'))
+    }
+    type_labels = dict(Mission.TYPE_CHOICES)
+    missions_type_chart = {
+        'labels': [type_labels.get(k, k) for k in missions_by_type.keys()],
+        'data': list(missions_by_type.values()),
+    }
+
+    sessions_by_verdict = {
+        row['verdict']: row['c']
+        for row in GameSession.objects.values('verdict').annotate(c=Count('id'))
+    }
+    verdict_labels = dict(GameSession.VERDICT_CHOICES)
+    sessions_verdict_chart = {
+        'labels': [verdict_labels.get(k, k) for k in sessions_by_verdict.keys()],
+        'data': list(sessions_by_verdict.values()),
+    }
+
+    succes_count = sessions_by_verdict.get(GameSession.VERDICT_SUCCES, 0)
+    echec_count = sessions_by_verdict.get(GameSession.VERDICT_ECHEC, 0)
+    decisive_count = succes_count + echec_count
+    global_win_rate = round(100 * succes_count / decisive_count) if decisive_count else None
+
+    # Durées (sessions avec end_time)
+    finished = list(
+        GameSession.objects.filter(end_time__isnull=False)
+        .only('id', 'name', 'start_time', 'end_time', 'map')
+    )
+    durations_sec = []
+    longest_session = None
+    longest_sec = -1
+    for s in finished:
+        sec = (s.end_time - s.start_time).total_seconds()
+        if sec < 0:
+            continue
+        durations_sec.append(sec)
+        if sec > longest_sec:
+            longest_sec = sec
+            longest_session = s
+    total_playtime_sec = int(sum(durations_sec)) if durations_sec else 0
+    avg_duration_min = round(sum(durations_sec) / len(durations_sec) / 60) if durations_sec else None
+    total_playtime_hours = round(total_playtime_sec / 3600, 1) if total_playtime_sec else 0
+
+    gsp_total = GameSessionPlayer.objects.count()
+    avg_players_per_session = round(gsp_total / sessions_count, 1) if sessions_count else None
+
+    never_played_count = Mission.objects.annotate(
+        played=Count('game_sessions')
+    ).filter(played=0).count()
+
+    # --- Évolution mensuelle (24 mois) ---
+    now = timezone.now()
+    since = now - timedelta(days=730)
+    sessions_monthly_qs = (
+        GameSession.objects.filter(start_time__gte=since)
+        .annotate(month=TruncMonth('start_time'))
+        .values('month')
+        .annotate(c=Count('id'))
+        .order_by('month')
+    )
+    missions_monthly_qs = (
+        Mission.objects.filter(publication_date__gte=since)
+        .annotate(month=TruncMonth('publication_date'))
+        .values('month')
+        .annotate(c=Count('id'))
+        .order_by('month')
+    )
+    sessions_by_month = {
+        (row['month'].year, row['month'].month): row['c']
+        for row in sessions_monthly_qs
+        if row['month']
+    }
+    missions_by_month = {
+        (row['month'].year, row['month'].month): row['c']
+        for row in missions_monthly_qs
+        if row['month']
+    }
+    month_labels = []
+    sessions_month_data = []
+    missions_month_data = []
+    cursor = (since.replace(day=1) if since.day != 1 else since)
+    # Align cursor to first of month
+    cursor = cursor.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
+    end_month = now.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
+    while cursor <= end_month:
+        key = (cursor.year, cursor.month)
+        month_labels.append(f"{month_abbr[cursor.month]} {cursor.year}")
+        sessions_month_data.append(sessions_by_month.get(key, 0))
+        missions_month_data.append(missions_by_month.get(key, 0))
+        if cursor.month == 12:
+            cursor = cursor.replace(year=cursor.year + 1, month=1)
+        else:
+            cursor = cursor.replace(month=cursor.month + 1)
+
+    monthly_chart = {
+        'labels': month_labels,
+        'sessions': sessions_month_data,
+        'missions': missions_month_data,
+    }
+
+    # --- Jour de la semaine / heure ---
+    # ExtractWeekDay: 1=Sunday … 7=Saturday (Django)
+    weekday_names = {
+        1: 'Dimanche', 2: 'Lundi', 3: 'Mardi', 4: 'Mercredi',
+        5: 'Jeudi', 6: 'Vendredi', 7: 'Samedi',
+    }
+    weekday_order = [2, 3, 4, 5, 6, 7, 1]  # Lundi → Dimanche
+    weekday_raw = {
+        row['wd']: row['c']
+        for row in GameSession.objects.annotate(wd=ExtractWeekDay('start_time'))
+        .values('wd').annotate(c=Count('id'))
+        if row['wd'] is not None
+    }
+    weekday_chart = {
+        'labels': [weekday_names[d] for d in weekday_order],
+        'data': [weekday_raw.get(d, 0) for d in weekday_order],
+    }
+    most_active_weekday = None
+    if weekday_raw:
+        best_wd = max(weekday_raw, key=weekday_raw.get)
+        most_active_weekday = weekday_names.get(best_wd, str(best_wd))
+
+    hour_raw = {
+        row['hour']: row['c']
+        for row in GameSession.objects.annotate(hour=ExtractHour('start_time'))
+        .values('hour').annotate(c=Count('id'))
+        if row['hour'] is not None
+    }
+    hour_chart = {
+        'labels': [f"{h:02d}h" for h in range(24)],
+        'data': [hour_raw.get(h, 0) for h in range(24)],
+    }
+
+    # --- Top missions ---
+    top_missions_qs = (
+        Mission.objects.annotate(
+            played_count=Count('game_sessions'),
+            succes_count=Count(
+                'game_sessions',
+                filter=Q(game_sessions__verdict=GameSession.VERDICT_SUCCES),
+            ),
+            echec_count=Count(
+                'game_sessions',
+                filter=Q(game_sessions__verdict=GameSession.VERDICT_ECHEC),
+            ),
+        )
+        .filter(played_count__gt=0)
+        .order_by('-played_count')[:10]
+    )
+    top_missions = []
+    for m in top_missions_qs:
+        decisive = m.succes_count + m.echec_count
+        win_rate = round(100 * m.succes_count / decisive) if decisive else None
+        top_missions.append({
+            'id': m.id,
+            'name': m.name,
+            'map_display': map_display_cache.get(m.map, m.map),
+            'played_count': m.played_count,
+            'win_rate': win_rate,
+            'succes_count': m.succes_count,
+            'decisive': decisive,
+        })
+
+    # --- Top cartes ---
+    map_stats_raw = (
+        GameSession.objects.values('map')
+        .annotate(
+            sessions_count=Count('id'),
+            succes_count=Count('id', filter=Q(verdict=GameSession.VERDICT_SUCCES)),
+            echec_count=Count('id', filter=Q(verdict=GameSession.VERDICT_ECHEC)),
+        )
+        .order_by('-sessions_count')
+    )
+    top_maps = []
+    maps_winrate = []
+    for row in map_stats_raw:
+        code = row['map'] or ''
+        display = map_display_cache.get(code, code or '—')
+        decisive = row['succes_count'] + row['echec_count']
+        win_rate = round(100 * row['succes_count'] / decisive) if decisive else None
+        entry = {
+            'code': code,
+            'display': display,
+            'sessions_count': row['sessions_count'],
+            'win_rate': win_rate,
+            'succes_count': row['succes_count'],
+            'decisive': decisive,
+        }
+        if len(top_maps) < 10:
+            top_maps.append(entry)
+        if decisive >= STATS_MIN_DECISIVE_FOR_MAP_WR:
+            maps_winrate.append(entry)
+
+    maps_best_winrate = sorted(
+        maps_winrate, key=lambda x: (x['win_rate'] is not None, x['win_rate'] or 0), reverse=True
+    )[:10]
+    maps_worst_winrate = sorted(
+        maps_winrate, key=lambda x: (x['win_rate'] is not None, x['win_rate'] if x['win_rate'] is not None else 999)
+    )[:10]
+
+    most_played_map = top_maps[0]['display'] if top_maps else None
+
+    # --- Top joueurs ---
+    top_players_qs = (
+        Player.objects.annotate(
+            sessions_count=Count('game_sessions__session', distinct=True),
+        )
+        .filter(sessions_count__gt=0)
+        .order_by('-sessions_count')[:10]
+    )
+    top_players = [
+        {'id': p.id, 'name': p.name, 'sessions_count': p.sessions_count}
+        for p in top_players_qs
+    ]
+
+    # Ratio vivant/mort (seuil minimum)
+    player_status = (
+        GameSessionPlayer.objects.values('player_id', 'player__name')
+        .annotate(
+            sessions_count=Count('session', distinct=True),
+            alive=Count('id', filter=Q(status='VIVANT')),
+            dead=Count('id', filter=Q(status='MORT')),
+        )
+        .filter(sessions_count__gte=STATS_MIN_SESSIONS_FOR_RATIO)
+    )
+    survival_ranking = []
+    for row in player_status:
+        dead = row['dead']
+        alive = row['alive']
+        if dead > 0:
+            ratio = round(alive / dead, 2)
+        else:
+            ratio = float('inf') if alive > 0 else 0
+        survival_ranking.append({
+            'id': row['player_id'],
+            'name': row['player__name'],
+            'sessions_count': row['sessions_count'],
+            'alive': alive,
+            'dead': dead,
+            'ratio': ratio,
+            'ratio_display': '∞' if ratio == float('inf') else ratio,
+        })
+    survival_ranking.sort(
+        key=lambda x: (1, 0) if x['ratio'] == float('inf') else (0, x['ratio']),
+        reverse=True,
+    )
+    top_survival = survival_ranking[:10]
+
+    # --- Rôles ---
+    top_roles_raw = (
+        GameSessionPlayer.objects.exclude(role='')
+        .values('role')
+        .annotate(c=Count('id'))
+        .order_by('-c')[:15]
+    )
+    top_roles = [{'role': r['role'], 'count': r['c']} for r in top_roles_raw]
+    most_popular_role = top_roles[0]['role'] if top_roles else None
+
+    role_cat_map = {
+        rc.role_name: rc.category for rc in RoleCategory.objects.all()
+    }
+    category_counts = defaultdict(int)
+    for r in GameSessionPlayer.objects.exclude(role='').values('role').annotate(c=Count('id')):
+        cat = role_cat_map.get(r['role'], r['role'])
+        category_counts[cat] += r['c']
+    top_role_categories = sorted(
+        [{'category': k, 'count': v} for k, v in category_counts.items()],
+        key=lambda x: -x['count'],
+    )[:15]
+
+    # --- Top auteurs ---
+    top_authors_raw = (
+        Mission.objects.exclude(authors='')
+        .exclude(authors='Non renseigné')
+        .values('authors')
+        .annotate(c=Count('id'))
+        .order_by('-c')[:10]
+    )
+    top_authors = [{'authors': a['authors'], 'count': a['c']} for a in top_authors_raw]
+
+    # Fun facts
+    longest_session_info = None
+    if longest_session:
+        longest_session_info = {
+            'id': longest_session.id,
+            'name': longest_session.name,
+            'duration_min': int(longest_sec // 60),
+            'map_display': map_display_cache.get(longest_session.map, longest_session.map),
+        }
+
+    return {
+        # KPIs
+        'missions_count': missions_count,
+        'sessions_count': sessions_count,
+        'players_count': players_count,
+        'users_count': users_count,
+        'decisive_count': decisive_count,
+        'succes_count': succes_count,
+        'echec_count': echec_count,
+        'global_win_rate': global_win_rate,
+        'total_playtime_hours': total_playtime_hours,
+        'avg_duration_min': avg_duration_min,
+        'avg_players_per_session': avg_players_per_session,
+        'never_played_count': never_played_count,
+        # Charts (JSON-serializable)
+        'missions_status_chart': missions_status_chart,
+        'missions_type_chart': missions_type_chart,
+        'sessions_verdict_chart': sessions_verdict_chart,
+        'monthly_chart': monthly_chart,
+        'weekday_chart': weekday_chart,
+        'hour_chart': hour_chart,
+        # Rankings
+        'top_missions': top_missions,
+        'top_maps': top_maps,
+        'maps_best_winrate': maps_best_winrate,
+        'maps_worst_winrate': maps_worst_winrate,
+        'top_players': top_players,
+        'top_survival': top_survival,
+        'top_roles': top_roles,
+        'top_role_categories': top_role_categories,
+        'top_authors': top_authors,
+        # Fun facts
+        'longest_session': longest_session_info,
+        'most_played_map': most_played_map,
+        'most_popular_role': most_popular_role,
+        'most_active_weekday': most_active_weekday,
+        'min_sessions_for_ratio': STATS_MIN_SESSIONS_FOR_RATIO,
+        'min_decisive_for_map_wr': STATS_MIN_DECISIVE_FOR_MAP_WR,
+    }
+
+
+def stats(request):
+    """Page publique de statistiques globales GDC Storm."""
+    context = cache.get(STATS_CACHE_KEY)
+    if context is None:
+        context = _build_stats_context()
+        cache.set(STATS_CACHE_KEY, context, STATS_CACHE_TTL)
+    return render(request, 'gdc_storm/stats.html', context)
+
+
+@login_required
+def role_categories(request):
+    """Interface admin : fusion / édition des catégories de rôles."""
+    forbidden = _require_superuser(request)
+    if forbidden:
+        return forbidden
+
+    ROLE_USAGE_TTL = 300
+    PAGE_SIZE = 100
+
+    def _invalidate_role_caches():
+        cache.delete(STATS_CACHE_KEY)
+        cache.delete(ROLE_USAGE_CACHE_KEY)
+
+    def _get_role_counts():
+        counts = cache.get(ROLE_USAGE_CACHE_KEY)
+        if counts is not None:
+            return counts
+        counts = {
+            row['role']: row['c']
+            for row in GameSessionPlayer.objects.exclude(role='')
+            .values('role')
+            .annotate(c=Count('id'))
+        }
+        cache.set(ROLE_USAGE_CACHE_KEY, counts, ROLE_USAGE_TTL)
+        return counts
+
+    if request.method == 'POST':
+        action = request.POST.get('action', '')
+        if action == 'sync_roles':
+            # Sync léger : DISTINCT seulement (pas de COUNT), hors du chemin de lecture habituel
+            existing_names = set(RoleCategory.objects.values_list('role_name', flat=True))
+            distinct_roles = (
+                GameSessionPlayer.objects.exclude(role='')
+                .values_list('role', flat=True)
+                .distinct()
+            )
+            missing = [
+                RoleCategory(role_name=n, category=n)
+                for n in distinct_roles
+                if n not in existing_names
+            ]
+            if missing:
+                RoleCategory.objects.bulk_create(missing, ignore_conflicts=True, batch_size=500)
+                messages.success(request, f"{len(missing)} nouveau(x) rôle(s) synchronisé(s).")
+            else:
+                messages.info(request, "Aucun nouveau rôle à synchroniser.")
+            _invalidate_role_caches()
+            return redirect('role_categories')
+
+        if action == 'merge':
+            ids = request.POST.getlist('role_ids')
+            target = (request.POST.get('target_category') or '').strip()
+            if not ids:
+                messages.error(request, "Sélectionne au moins un rôle à fusionner.")
+            elif not target:
+                messages.error(request, "Indique une catégorie cible.")
+            else:
+                updated = RoleCategory.objects.filter(id__in=ids).update(category=target)
+                _invalidate_role_caches()
+                messages.success(
+                    request,
+                    f"{updated} rôle(s) fusionné(s) dans « {target} ».",
+                )
+            return redirect(request.get_full_path() if request.GET else 'role_categories')
+
+        if action == 'update_one':
+            role_id = request.POST.get('role_id')
+            new_cat = (request.POST.get('category') or '').strip()
+            next_url = request.POST.get('next') or reverse('role_categories')
+            if not role_id or not new_cat:
+                messages.error(request, "Catégorie invalide.")
+            else:
+                rc = get_object_or_404(RoleCategory, id=role_id)
+                old = rc.category
+                if old != new_cat:
+                    rc.category = new_cat
+                    rc.save(update_fields=['category'])
+                    _invalidate_role_caches()
+                    messages.success(
+                        request,
+                        f"« {rc.role_name} » : « {old} » → « {new_cat} ».",
+                    )
+                else:
+                    messages.info(request, "Aucun changement.")
+            return redirect(next_url)
+
+        if action == 'reset_one':
+            role_id = request.POST.get('role_id')
+            next_url = request.POST.get('next') or reverse('role_categories')
+            rc = get_object_or_404(RoleCategory, id=role_id)
+            if rc.category != rc.role_name:
+                rc.category = rc.role_name
+                rc.save(update_fields=['category'])
+                _invalidate_role_caches()
+                messages.success(
+                    request,
+                    f"« {rc.role_name} » réinitialisé (catégorie = nom brut).",
+                )
+            return redirect(next_url)
+
+    q = (request.GET.get('q') or '').strip()
+    filter_uncategorized = request.GET.get('uncategorized') == '1'
+    sort = request.GET.get('sort', 'usage')
+    page_number = request.GET.get('page', '1')
+
+    role_counts = _get_role_counts()
+
+    qs = RoleCategory.objects.all()
+    if q:
+        qs = qs.filter(Q(role_name__icontains=q) | Q(category__icontains=q))
+    if filter_uncategorized:
+        qs = qs.filter(category=F('role_name'))
+
+    roles = list(qs.only('id', 'role_name', 'category'))
+    for rc in roles:
+        rc.usage_count = role_counts.get(rc.role_name, 0)
+        rc.is_mapped = rc.category != rc.role_name
+
+    if sort == 'name':
+        roles.sort(key=lambda r: (r.role_name or '').casefold())
+    elif sort == 'category':
+        roles.sort(key=lambda r: ((r.category or '').casefold(), (r.role_name or '').casefold()))
+    else:
+        # usage desc (défaut) — les rôles les plus joués en premier
+        roles.sort(key=lambda r: (-r.usage_count, (r.role_name or '').casefold()))
+
+    mapped_count = sum(1 for r in roles if r.is_mapped)
+    roles_count = len(roles)
+
+    paginator = Paginator(roles, PAGE_SIZE)
+    page_obj = paginator.get_page(page_number)
+
+    existing_categories = sorted(
+        {r.category for r in roles if r.category},
+        key=lambda x: x.casefold(),
+    )
+
+    return render(request, 'gdc_storm/role_categories.html', {
+        'roles': page_obj,
+        'page_obj': page_obj,
+        'roles_count': roles_count,
+        'mapped_count': mapped_count,
+        'q': q,
+        'filter_uncategorized': filter_uncategorized,
+        'sort': sort,
+        'existing_categories': existing_categories,
     })

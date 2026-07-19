@@ -176,12 +176,27 @@ class GameSessionPlayer(models.Model):
     ]
     session = models.ForeignKey(GameSession, on_delete=models.CASCADE, related_name='players')
     player = models.ForeignKey(Player, on_delete=models.CASCADE, related_name='game_sessions')  # player obligatoire, non-nullable
-    role = models.CharField(max_length=100)
+    role = models.CharField(max_length=100, db_index=True)
     status = models.CharField(max_length=10, choices=STATUS_CHOICES, default='VIVANT')
 
     def __str__(self):
         player_name = self.player.name if self.player else 'Joueur inconnu'
         return f"{player_name} ({self.role}) - {self.status}"
+
+
+class RoleCategory(models.Model):
+    """Table de correspondance : rôle brut (GameSessionPlayer.role) → catégorie normalisée."""
+    role_name = models.CharField(max_length=100, unique=True, verbose_name='Nom du rôle (brut)')
+    category = models.CharField(max_length=100, verbose_name='Catégorie de rôle')
+
+    def __str__(self):
+        return f"{self.role_name} -> {self.category}"
+
+    class Meta:
+        verbose_name = 'Catégorie de rôle'
+        verbose_name_plural = 'Catégories de rôles'
+        ordering = ['category', 'role_name']
+
 
 class ApiToken(models.Model):
     key = models.CharField(max_length=64, unique=True)

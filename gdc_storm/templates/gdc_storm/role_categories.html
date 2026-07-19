@@ -1,0 +1,267 @@
+{% extends 'gdc_storm/base.html' %}
+{% block title %}Fusion des rôles - GDC Storm{% endblock %}
+{% block extra_head %}
+<style>
+.roles-page { max-width: 1100px; margin: 35px auto 0; padding: 0 32px 48px; }
+.roles-card {
+    background: #fff;
+    border-radius: 18px;
+    box-shadow: 0 2px 16px #0002;
+    padding: 22px 24px 28px;
+}
+.roles-title { font-size: 2em; font-weight: 700; margin: 0 0 6px; }
+.roles-sub { color: #666; margin-bottom: 18px; }
+.roles-toolbar {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 10px;
+    align-items: center;
+    margin-bottom: 16px;
+}
+.roles-toolbar input[type="text"],
+.roles-toolbar select,
+.roles-merge input[type="text"],
+.roles-row-cat {
+    padding: 7px 10px;
+    border: 1px solid #ccc;
+    border-radius: 8px;
+    font-size: 0.95em;
+}
+.roles-toolbar .home-btn,
+.roles-merge .home-btn,
+.roles-actions .home-btn {
+    padding: 7px 14px;
+    font-size: 0.92em;
+    border: none;
+    border-radius: 8px;
+    cursor: pointer;
+    font-weight: 600;
+}
+.btn-yellow { background: #FFD600; color: #111; }
+.btn-blue { background: #1976d2; color: #fff; }
+.btn-gray { background: #eee; color: #333; text-decoration: none; display: inline-block; }
+.btn-yellow:hover, .btn-blue:hover, .btn-gray:hover { filter: brightness(0.95); }
+.roles-merge {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 10px;
+    align-items: center;
+    background: #fffbe6;
+    border: 1px solid #FFD600;
+    border-radius: 12px;
+    padding: 12px 14px;
+    margin-bottom: 18px;
+}
+.roles-merge label { font-weight: 600; }
+.roles-merge #selected-count { color: #1976d2; font-weight: 700; }
+.roles-table { width: 100%; border-collapse: collapse; font-size: 0.95em; }
+.roles-table th {
+    text-align: left;
+    padding: 8px 10px;
+    background: #111;
+    color: #FFD600;
+}
+.roles-table td {
+    padding: 8px 10px;
+    border-bottom: 1px solid #eee;
+    vertical-align: middle;
+}
+.roles-table tr:nth-child(even) { background: #fffbe6; }
+.roles-table tr.mapped { background: #e8f5e9; }
+.roles-table tr.mapped:nth-child(even) { background: #dcedc8; }
+.roles-badge {
+    display: inline-block;
+    font-size: 0.75em;
+    padding: 2px 8px;
+    border-radius: 10px;
+    background: #43a047;
+    color: #fff;
+    font-weight: 600;
+    margin-left: 6px;
+}
+.roles-actions { display: flex; gap: 6px; flex-wrap: wrap; align-items: center; }
+.roles-empty { color: #888; font-style: italic; padding: 16px 0; }
+.roles-stats-line { color: #555; margin-bottom: 12px; font-size: 0.95em; }
+.roles-inline-form { display: flex; gap: 6px; align-items: center; margin: 0; }
+.roles-pager {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+    align-items: center;
+    justify-content: center;
+    margin-top: 18px;
+}
+.roles-pager a, .roles-pager span {
+    padding: 6px 12px;
+    border-radius: 8px;
+    text-decoration: none;
+    font-weight: 600;
+}
+.roles-pager a { background: #eee; color: #1976d2; }
+.roles-pager .current { background: #1976d2; color: #fff; }
+</style>
+{% endblock %}
+{% block content %}
+<div class="roles-page">
+    <div class="roles-card">
+        <div class="roles-title">Fusion des rôles</div>
+        <div class="roles-sub">
+            Regroupe les rôles bruts (ex. <em>Medic</em>, <em>Médic FTL</em>) sous une même catégorie pour les stats.
+            Les compteurs d’usage sont mis en cache 5&nbsp;min.
+        </div>
+
+        {% if messages %}
+        <div class="message-block" style="margin-bottom:14px;">
+            {% for message in messages %}
+                <div class="message-{{ message.tags|default:'info' }}">{{ message }}</div>
+            {% endfor %}
+        </div>
+        {% endif %}
+
+        <div class="roles-stats-line">
+            {{ roles_count }} rôle(s) correspondant(s) — {{ mapped_count }} déjà catégorisé(s)
+            {% if page_obj.paginator.num_pages > 1 %}
+            — page {{ page_obj.number }}/{{ page_obj.paginator.num_pages }}
+            {% endif %}
+        </div>
+
+        <form method="get" class="roles-toolbar">
+            <input type="text" name="q" value="{{ q }}" placeholder="Filtrer par nom ou catégorie…" style="flex:1;min-width:180px;">
+            <select name="sort">
+                <option value="usage" {% if sort == 'usage' %}selected{% endif %}>Tri : usages</option>
+                <option value="name" {% if sort == 'name' %}selected{% endif %}>Tri : nom</option>
+                <option value="category" {% if sort == 'category' %}selected{% endif %}>Tri : catégorie</option>
+            </select>
+            <label style="display:flex;align-items:center;gap:6px;cursor:pointer;">
+                <input type="checkbox" name="uncategorized" value="1" {% if filter_uncategorized %}checked{% endif %} onchange="this.form.submit()">
+                Non catégorisés seulement
+            </label>
+            <button type="submit" class="home-btn btn-blue">Filtrer</button>
+            {% if q or filter_uncategorized or sort != 'usage' %}
+            <a href="{% url 'role_categories' %}" class="home-btn btn-gray">Reset filtre</a>
+            {% endif %}
+        </form>
+
+        <form method="post" style="margin-bottom:12px;">
+            {% csrf_token %}
+            <input type="hidden" name="action" value="sync_roles">
+            <button type="submit" class="home-btn btn-gray">Synchroniser les nouveaux rôles</button>
+            <span style="color:#888;font-size:0.9em;margin-left:8px;">(optionnel — les rôles API sont déjà créés à la volée)</span>
+        </form>
+
+        <form method="post" id="merge-form" class="roles-merge" action="{% url 'role_categories' %}?{{ request.GET.urlencode }}">
+            {% csrf_token %}
+            <input type="hidden" name="action" value="merge">
+            <label>Fusionner la sélection vers :</label>
+            <input type="text" name="target_category" id="target_category" list="cat-suggestions" placeholder="ex. Médic" required style="min-width:180px;">
+            <datalist id="cat-suggestions">
+                {% for cat in existing_categories %}
+                <option value="{{ cat }}">
+                {% endfor %}
+            </datalist>
+            <button type="submit" class="home-btn btn-yellow" onclick="return confirmMerge()">Fusionner</button>
+            <span><span id="selected-count">0</span> sélectionné(s) sur cette page</span>
+        </form>
+
+        {% if roles %}
+        <table class="roles-table">
+            <thead>
+                <tr>
+                    <th style="width:36px;"><input type="checkbox" id="check-all" title="Tout sélectionner (page)"></th>
+                    <th>Rôle brut</th>
+                    <th style="width:80px;">Usages</th>
+                    <th>Catégorie</th>
+                    <th style="width:160px;">Actions</th>
+                </tr>
+            </thead>
+            <tbody>
+            {% for r in roles %}
+                <tr class="{% if r.is_mapped %}mapped{% endif %}">
+                    <td><input type="checkbox" name="role_ids" value="{{ r.id }}" class="role-check" form="merge-form"></td>
+                    <td>
+                        <strong>{{ r.role_name }}</strong>
+                        {% if r.is_mapped %}<span class="roles-badge">mappé</span>{% endif %}
+                    </td>
+                    <td>{{ r.usage_count }}</td>
+                    <td>
+                        <form method="post" class="roles-inline-form" action="{% url 'role_categories' %}">
+                            {% csrf_token %}
+                            <input type="hidden" name="action" value="update_one">
+                            <input type="hidden" name="role_id" value="{{ r.id }}">
+                            <input type="hidden" name="next" value="{{ request.get_full_path }}">
+                            <input type="text" name="category" value="{{ r.category }}" class="roles-row-cat" list="cat-suggestions" style="flex:1;min-width:120px;">
+                            <button type="submit" class="home-btn btn-yellow" title="Enregistrer">OK</button>
+                        </form>
+                    </td>
+                    <td class="roles-actions">
+                        <button type="button" class="home-btn btn-blue" onclick="fillTarget(this.getAttribute('data-cat'))" data-cat="{{ r.category }}">Cible</button>
+                        {% if r.is_mapped %}
+                        <form method="post" style="display:inline;margin:0;" action="{% url 'role_categories' %}">
+                            {% csrf_token %}
+                            <input type="hidden" name="action" value="reset_one">
+                            <input type="hidden" name="role_id" value="{{ r.id }}">
+                            <input type="hidden" name="next" value="{{ request.get_full_path }}">
+                            <button type="submit" class="home-btn btn-gray">Reset</button>
+                        </form>
+                        {% endif %}
+                    </td>
+                </tr>
+            {% endfor %}
+            </tbody>
+        </table>
+
+        {% if page_obj.paginator.num_pages > 1 %}
+        <div class="roles-pager">
+            {% if page_obj.has_previous %}
+            <a href="?q={{ q|urlencode }}&sort={{ sort }}{% if filter_uncategorized %}&uncategorized=1{% endif %}&page={{ page_obj.previous_page_number }}">← Préc.</a>
+            {% endif %}
+            {% for num in page_obj.paginator.page_range %}
+                {% if num == page_obj.number %}
+                <span class="current">{{ num }}</span>
+                {% elif num == 1 or num == page_obj.paginator.num_pages or num >= page_obj.number|add:'-2' and num <= page_obj.number|add:'2' %}
+                <a href="?q={{ q|urlencode }}&sort={{ sort }}{% if filter_uncategorized %}&uncategorized=1{% endif %}&page={{ num }}">{{ num }}</a>
+                {% endif %}
+            {% endfor %}
+            {% if page_obj.has_next %}
+            <a href="?q={{ q|urlencode }}&sort={{ sort }}{% if filter_uncategorized %}&uncategorized=1{% endif %}&page={{ page_obj.next_page_number }}">Suiv. →</a>
+            {% endif %}
+        </div>
+        {% endif %}
+
+        {% else %}
+        <div class="roles-empty">Aucun rôle trouvé.</div>
+        {% endif %}
+    </div>
+</div>
+<script>
+(function() {
+    var checks = document.querySelectorAll('.role-check');
+    var countEl = document.getElementById('selected-count');
+    var all = document.getElementById('check-all');
+    function refresh() {
+        var n = 0;
+        checks.forEach(function(c) { if (c.checked) n++; });
+        if (countEl) countEl.textContent = n;
+    }
+    checks.forEach(function(c) { c.addEventListener('change', refresh); });
+    if (all) {
+        all.addEventListener('change', function() {
+            checks.forEach(function(c) { c.checked = all.checked; });
+            refresh();
+        });
+    }
+    refresh();
+})();
+function fillTarget(cat) {
+    var el = document.getElementById('target_category');
+    if (el) { el.value = cat; el.focus(); }
+}
+function confirmMerge() {
+    var n = document.querySelectorAll('.role-check:checked').length;
+    var cat = (document.getElementById('target_category') || {}).value || '';
+    if (!n) { alert('Sélectionne au moins un rôle.'); return false; }
+    if (!cat.trim()) { alert('Indique une catégorie cible.'); return false; }
+    return confirm('Fusionner ' + n + ' rôle(s) vers « ' + cat.trim() + ' » ?');
+}
+</script>
+{% endblock %}

@@ -103,6 +103,7 @@
                 <tr><th>Texte lobby</th><td>{{ mission.overviewText|linebreaksbr|default:'—' }}</td></tr>
                 <tr><th>Date de publication</th><td>{{ mission.publication_date|date:'d/m/Y H:i' }}</td></tr>
                 <tr><th>Ratio victoire</th><td>{{ win_rate_display }}</td></tr>
+                <tr><th>Sessions jouées</th><td>{{ detail_stats.sessions_count }}</td></tr>
                 <tr><th>Statut</th><td>
                     {% if mission.status == 'JOUABLE' %}
                         <span style="vertical-align:middle;display:inline-block;margin-right:6px;color:#43a047;font-size:1.2em;">&#10003;</span>
@@ -121,12 +122,13 @@
                 </td></tr>
             </table>
         </div>
-        <!-- Colonne droite (briefing + sessions) -->
+        <!-- Colonne droite (briefing + sessions + stats) -->
         <div style="flex:0 0 65.66666%;">
             <div class="mission-tabs" style="margin-bottom:24px;">
                 <div style="display:flex;gap:0;">
                     <button id="tab-briefing" class="tab-btn" style="flex:1 1 0;padding:10px 0;font-weight:700;font-size:1.08em;background:#1976d2;color:#fff;border:none;border-radius:8px 8px 0 0;cursor:pointer;">Briefing</button>
                     <button id="tab-sessions" class="tab-btn" style="flex:1 1 0;padding:10px 0;font-weight:700;font-size:1.08em;background:#eee;color:#1976d2;border:none;border-radius:8px 8px 0 0;cursor:pointer;">Sessions</button>
+                    <button id="tab-stats" class="tab-btn" style="flex:1 1 0;padding:10px 0;font-weight:700;font-size:1.08em;background:#eee;color:#1976d2;border:none;border-radius:8px 8px 0 0;cursor:pointer;">Stats</button>
                 </div>
                 <div id="tab-content-briefing" class="tab-content" style="background:#fff;border-radius:0 0 8px 8px;padding:24px 18px 18px 18px;">
                     {% if mission.briefing %}
@@ -176,6 +178,62 @@
                         <div style="color:#888;font-size:1.1em;">Aucune session jouée pour cette mission.</div>
                     {% endif %}
                 </div>
+                <div id="tab-content-stats" class="tab-content" style="display:none;background:#fff;border-radius:0 0 8px 8px;padding:24px 18px 18px 18px;">
+                    <div style="margin-bottom:24px;">
+                        <div style="font-weight:700;margin-bottom:10px;border-bottom:2px solid #FFD600;padding-bottom:4px;">Résumé</div>
+                        <ul style="list-style:none;padding:0;margin:0;line-height:1.7;">
+                            <li><strong>Sessions jouées :</strong> {{ detail_stats.sessions_count }}</li>
+                            <li><strong>Taux de victoire :</strong> {{ win_rate_display }}</li>
+                            <li><strong>Verdicts :</strong>
+                                {% if detail_stats.verdict_counts %}
+                                    {% for v in detail_stats.verdict_counts %}{{ v.label }}&nbsp;{{ v.count }}{% if not forloop.last %} · {% endif %}{% endfor %}
+                                {% else %}—{% endif %}
+                            </li>
+                            <li><strong>Durée moyenne :</strong> {% if detail_stats.avg_min is not None %}{{ detail_stats.avg_min }} min{% else %}—{% endif %}</li>
+                            <li><strong>Temps cumulé :</strong> {% if detail_stats.total_hours %}{{ detail_stats.total_hours }} h{% else %}—{% endif %}</li>
+                            <li><strong>Session la plus longue :</strong>
+                                {% if detail_stats.longest %}
+                                    <a href="{% url 'session_detail' detail_stats.longest.id %}" style="color:#1976d2;font-weight:600;">{{ detail_stats.longest.duration_min }} min</a>
+                                {% else %}—{% endif %}
+                            </li>
+                            <li><strong>Joueurs / session :</strong> {% if detail_stats.avg_players is not None %}{{ detail_stats.avg_players }}{% else %}—{% endif %}</li>
+                            <li><strong>Survivants / session :</strong> {% if detail_stats.avg_survivors is not None %}{{ detail_stats.avg_survivors }}{% else %}—{% endif %}</li>
+                        </ul>
+                    </div>
+                    {% if detail_stats.top_roles or detail_stats.top_players or detail_stats.top_categories %}
+                    <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:16px;">
+                        {% if detail_stats.top_roles %}
+                        <div>
+                            <div style="font-weight:700;margin-bottom:6px;border-bottom:2px solid #FFD600;padding-bottom:4px;">Top rôles</div>
+                            {% for r in detail_stats.top_roles %}
+                            <div style="display:flex;justify-content:space-between;padding:3px 0;border-bottom:1px solid #eee;"><span>{{ r.role }}</span><strong>{{ r.count }}</strong></div>
+                            {% endfor %}
+                        </div>
+                        {% endif %}
+                        {% if detail_stats.top_categories %}
+                        <div>
+                            <div style="font-weight:700;margin-bottom:6px;border-bottom:2px solid #FFD600;padding-bottom:4px;">Top catégories</div>
+                            {% for r in detail_stats.top_categories %}
+                            <div style="display:flex;justify-content:space-between;padding:3px 0;border-bottom:1px solid #eee;"><span>{{ r.category }}</span><strong>{{ r.count }}</strong></div>
+                            {% endfor %}
+                        </div>
+                        {% endif %}
+                        {% if detail_stats.top_players %}
+                        <div>
+                            <div style="font-weight:700;margin-bottom:6px;border-bottom:2px solid #FFD600;padding-bottom:4px;">Joueurs fréquents</div>
+                            {% for p in detail_stats.top_players %}
+                            <div style="display:flex;justify-content:space-between;padding:3px 0;border-bottom:1px solid #eee;">
+                                <a href="{% url 'player_detail' p.id %}" style="color:#1976d2;font-weight:600;">{{ p.name }}</a>
+                                <strong>{{ p.count }}</strong>
+                            </div>
+                            {% endfor %}
+                        </div>
+                        {% endif %}
+                    </div>
+                    {% else %}
+                    <div style="color:#888;font-size:1.1em;">Pas encore assez de données pour afficher des classements.</div>
+                    {% endif %}
+                </div>
             </div>
         </div>
     </div>
@@ -220,32 +278,28 @@ window.addEventListener('click', function(e) {
         ownerPopup.style.display = 'none';
     }
 });
-// Onglets Briefing/Sessions
+// Onglets Briefing / Sessions / Stats
 function setupTabs() {
-    var tabBriefing = document.getElementById('tab-briefing');
-    var tabSessions = document.getElementById('tab-sessions');
-    var contentBriefing = document.getElementById('tab-content-briefing');
-    var contentSessions = document.getElementById('tab-content-sessions');
-    if(tabBriefing && tabSessions && contentBriefing && contentSessions) {
-        tabBriefing.addEventListener('mousedown', function(e) {
-            e.preventDefault();
-            tabBriefing.style.background = '#1976d2';
-            tabBriefing.style.color = '#fff';
-            tabSessions.style.background = '#eee';
-            tabSessions.style.color = '#1976d2';
-            contentBriefing.style.display = '';
-            contentSessions.style.display = 'none';
-        });
-        tabSessions.addEventListener('mousedown', function(e) {
-            e.preventDefault();
-            tabSessions.style.background = '#1976d2';
-            tabSessions.style.color = '#fff';
-            tabBriefing.style.background = '#eee';
-            tabBriefing.style.color = '#1976d2';
-            contentBriefing.style.display = 'none';
-            contentSessions.style.display = '';
+    var tabs = [
+        { btn: document.getElementById('tab-briefing'), content: document.getElementById('tab-content-briefing') },
+        { btn: document.getElementById('tab-sessions'), content: document.getElementById('tab-content-sessions') },
+        { btn: document.getElementById('tab-stats'), content: document.getElementById('tab-content-stats') }
+    ];
+    if (!tabs.every(function(t) { return t.btn && t.content; })) return;
+    function activate(active) {
+        tabs.forEach(function(t) {
+            var on = t === active;
+            t.btn.style.background = on ? '#1976d2' : '#eee';
+            t.btn.style.color = on ? '#fff' : '#1976d2';
+            t.content.style.display = on ? '' : 'none';
         });
     }
+    tabs.forEach(function(t) {
+        t.btn.addEventListener('mousedown', function(e) {
+            e.preventDefault();
+            activate(t);
+        });
+    });
 }
 if (document.readyState === 'loading') {
     document.addEventListener('DOMContentLoaded', setupTabs);

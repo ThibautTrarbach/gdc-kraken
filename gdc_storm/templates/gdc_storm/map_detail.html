@@ -5,20 +5,79 @@
     <div style="display:flex;justify-content:space-between;align-items:center;">
         <div class="missions-title" style="font-size:2.1em;font-weight:700;margin-top:12px;text-align:left;">{{ map.display_name|default:map.code_name }}</div>
     </div>
-    <table class="info-table" style="margin:24px 0 32px 0;width:100%;min-width:400px;">
+    <table class="info-table" style="margin:24px 0 16px 0;width:100%;min-width:400px;">
         <tr>
             <th>Nom</th>
             <th>Nom d'origine</th>
             <th>Missions publiées</th>
             <th>Sessions jouées</th>
+            <th>Ratio victoire</th>
         </tr>
         <tr>
             <td>{{ map.display_name|default:'-' }}</td>
             <td>{{ map.code_name }}</td>
             <td>{{ missions_count }}</td>
             <td>{{ sessions_count }}</td>
+            <td>{{ detail_stats.win_rate_display }}</td>
         </tr>
     </table>
+    <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(160px,1fr));gap:12px;margin-bottom:20px;">
+        <div style="background:#fffbe6;border-radius:10px;padding:12px 14px;border-left:4px solid #FFD600;">
+            <div style="font-size:0.85em;color:#888;">Durée moyenne</div>
+            <div style="font-weight:700;">{% if detail_stats.avg_min is not None %}{{ detail_stats.avg_min }} min{% else %}—{% endif %}</div>
+        </div>
+        <div style="background:#fffbe6;border-radius:10px;padding:12px 14px;border-left:4px solid #FFD600;">
+            <div style="font-size:0.85em;color:#888;">Temps cumulé</div>
+            <div style="font-weight:700;">{% if detail_stats.total_hours %}{{ detail_stats.total_hours }} h{% else %}—{% endif %}</div>
+        </div>
+        <div style="background:#fffbe6;border-radius:10px;padding:12px 14px;border-left:4px solid #FFD600;">
+            <div style="font-size:0.85em;color:#888;">Joueurs / session</div>
+            <div style="font-weight:700;">{% if detail_stats.avg_players is not None %}{{ detail_stats.avg_players }}{% else %}—{% endif %}</div>
+        </div>
+        <div style="background:#fffbe6;border-radius:10px;padding:12px 14px;border-left:4px solid #FFD600;">
+            <div style="font-size:0.85em;color:#888;">Survivants / session</div>
+            <div style="font-weight:700;">{% if detail_stats.avg_survivors is not None %}{{ detail_stats.avg_survivors }}{% else %}—{% endif %}</div>
+        </div>
+        <div style="background:#fffbe6;border-radius:10px;padding:12px 14px;border-left:4px solid #FFD600;grid-column:span 2;">
+            <div style="font-size:0.85em;color:#888;">Verdicts</div>
+            <div style="font-weight:600;font-size:0.95em;">
+                {% if detail_stats.verdict_counts %}
+                    {% for v in detail_stats.verdict_counts %}{{ v.label }} {{ v.count }}{% if not forloop.last %} · {% endif %}{% endfor %}
+                {% else %}—{% endif %}
+            </div>
+        </div>
+    </div>
+    {% if detail_stats.top_missions or detail_stats.top_roles %}
+    <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(240px,1fr));gap:16px;margin-bottom:24px;">
+        {% if detail_stats.top_missions %}
+        <div>
+            <div style="font-weight:700;margin-bottom:6px;border-bottom:2px solid #FFD600;padding-bottom:4px;">Top missions</div>
+            {% for m in detail_stats.top_missions %}
+            <div style="display:flex;justify-content:space-between;gap:8px;padding:3px 0;border-bottom:1px solid #eee;">
+                <a href="{% url 'mission_detail' m.id %}" style="color:#1976d2;font-weight:600;">{{ m.name }}</a>
+                <span style="white-space:nowrap;">{{ m.count }} · {{ m.win_rate_display }}</span>
+            </div>
+            {% endfor %}
+        </div>
+        {% endif %}
+        {% if detail_stats.top_roles %}
+        <div>
+            <div style="font-weight:700;margin-bottom:6px;border-bottom:2px solid #FFD600;padding-bottom:4px;">Top rôles</div>
+            {% for r in detail_stats.top_roles %}
+            <div style="display:flex;justify-content:space-between;padding:3px 0;border-bottom:1px solid #eee;"><span>{{ r.role }}</span><strong>{{ r.count }}</strong></div>
+            {% endfor %}
+        </div>
+        {% endif %}
+        {% if detail_stats.top_categories %}
+        <div>
+            <div style="font-weight:700;margin-bottom:6px;border-bottom:2px solid #FFD600;padding-bottom:4px;">Top catégories</div>
+            {% for r in detail_stats.top_categories %}
+            <div style="display:flex;justify-content:space-between;padding:3px 0;border-bottom:1px solid #eee;"><span>{{ r.category }}</span><strong>{{ r.count }}</strong></div>
+            {% endfor %}
+        </div>
+        {% endif %}
+    </div>
+    {% endif %}
     <div class="user-tabs" style="margin-bottom:24px;">
         <div style="display:flex;gap:0;">
             <button id="tab-missions" class="tab-btn" style="flex:1 1 0;padding:10px 0;font-weight:700;font-size:1.08em;background:#1976d2;color:#fff;border:none;border-radius:8px 8px 0 0;cursor:pointer;">Missions publiées</button>
@@ -49,11 +108,11 @@
             <h3 style="margin-bottom:18px;font-size:1.3em;font-weight:600;">Sessions jouées</h3>
             <table class="modern-table">
                 <thead>
-                    <tr><th>Nom</th><th>Date</th><th>Durée</th><th>Joueurs</th><th>Survivants</th></th><th>Verdict</th></tr>
+                    <tr><th>Nom</th><th>Date</th><th>Durée</th><th>Verdict</th><th>Joueurs</th><th>Survivants</th></tr>
                 </thead>
                 <tbody>
                 {% for session in sessions_data %}
-                    <tr class="session-row-{{ session.verdict|lower }}">
+                    <tr class="{% if session.verdict == 'SUCCES' %}session-row-succes{% elif session.verdict == 'ECHEC' %}session-row-echec{% elif session.verdict == 'PvP' %}session-row-pvp{% elif session.verdict == 'TRAINING' %}session-row-training{% else %}session-row-indeterminee{% endif %}">
                         <td><a href="{% url 'session_detail' session.id %}">{{ session.name }}</a></td>
                         <td>{{ session.start_time|date:'d/m/Y H:i' }}</td>
                         <td>{% if session.duration_min is not None %}{{ session.duration_min }} min{% else %}—{% endif %}</td>
@@ -62,7 +121,7 @@
                         <td>{{ session.vivant_count }}</td>
                     </tr>
                 {% empty %}
-                    <tr><td colspan="5">Aucune session jouée sur cette carte.</td></tr>
+                    <tr><td colspan="6">Aucune session jouée sur cette carte.</td></tr>
                 {% endfor %}
                 </tbody>
             </table>

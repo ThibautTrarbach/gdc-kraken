@@ -6,11 +6,15 @@ from django.core.cache import cache
 from .models import Mission
 
 SESSION_LIST_CACHE_KEY = 'session_list_data_v1'
+STATS_CACHE_KEY = 'gdc_storm_stats_v1'
+ROLE_USAGE_CACHE_KEY = 'gdc_storm_role_usage_v1'
 
 
 def invalidate_session_list_cache():
-    """Invalide le cache de la liste des sessions après toute mutation."""
+    """Invalide le cache de la liste des sessions (et des stats) après toute mutation."""
     cache.delete(SESSION_LIST_CACHE_KEY)
+    cache.delete(STATS_CACHE_KEY)
+    cache.delete(ROLE_USAGE_CACHE_KEY)
 
 
 def strip_mission_version(mission_name):

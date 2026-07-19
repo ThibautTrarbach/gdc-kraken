@@ -4,13 +4,21 @@ from django.contrib.auth.admin import UserAdmin as BaseUserAdmin
 from django import forms
 from django.contrib import messages
 
-from .models import Mission, MapName, Player, GameSession, GameSessionPlayer, ApiToken
+from .models import Mission, MapName, Player, GameSession, GameSessionPlayer, RoleCategory, ApiToken
 from .models import LegacyRole, LegacyMission, LegacyImportError, LegacyGameSession, LegacyMapNames, LegacyGameSessionPlayerRole, LegacyPlayers
 
 admin.site.register(Mission)
 admin.site.register(Player)
 admin.site.register(GameSession)
 admin.site.register(GameSessionPlayer)
+
+
+@admin.register(RoleCategory)
+class RoleCategoryAdmin(admin.ModelAdmin):
+    list_display = ('role_name', 'category')
+    list_editable = ('category',)
+    search_fields = ('role_name', 'category')
+    ordering = ('category', 'role_name')
 
 # Register legacy data
 admin.site.register(LegacyMission)

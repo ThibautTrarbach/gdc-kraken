@@ -17,6 +17,7 @@
             <a href="/sessions/">Sessions</a>
             <a href="/maps/">Cartes</a>
             <a href="/players/">Joueurs</a>
+            <a href="/stats/">Stats</a>
             {% if user.is_authenticated %}
             <a href="/recup/">Récup</a>
             {% endif %}
@@ -27,6 +28,7 @@
                 </button>
                 <div class="nav-dropdown-panel" id="admin-menu-dropdown" hidden>
                     <a href="/recup/scan-pbo/">Scan PBO</a>
+                    <a href="/roles/">Fusion rôles</a>
                     <a href="/sessions/orphelines/">Sessions orphelines</a>
                     <a href="/legacy/">Legacy export</a>
                 </div>

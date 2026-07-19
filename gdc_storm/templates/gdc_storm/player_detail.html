@@ -13,24 +13,58 @@
     <div style="display:flex;justify-content:center;align-items:center;">
         <div class="missions-title" style="font-size:2.1em;font-weight:700;margin-top:12px;">Détail du joueur</div>
     </div>
-    <table style="width:100%;margin-top:24px;table-layout:fixed;border-radius:12px;overflow:hidden;box-shadow:0 2px 8px #0001;background:#fff;">
-        <thead>
-            <tr style="background:#f4f7fa;">
-                <th style="text-align:left;padding:12px 18px;">Nom</th>
-                <th style="text-align:left;padding:12px 18px;">Date de création</th>
-                <th style="text-align:left;padding:12px 18px;">Missions jouées</th>
-                <th style="text-align:left;padding:12px 18px;">Ratio</th>
-            </tr>
-        </thead>
-        <tbody>
-            <tr>
-                <td style="padding:12px 18px;">{{ player.name }}</td>
-                <td style="padding:12px 18px;">{{ player.created_at|date:'d/m/Y H:i' }}</td>
-                <td style="padding:12px 18px;">{{ total_sessions_played }}</td>
-                <td style="padding:12px 18px;">{{ dead_alive_ratio.alive }}/{{ dead_alive_ratio.dead }} ({{ dead_alive_ratio.ratio }})</td>
-            </tr>
-        </tbody>
-    </table>
+    <div style="display:flex;flex-wrap:wrap;gap:28px;align-items:flex-start;margin-top:24px;">
+        <div style="flex:1 1 280px;min-width:240px;">
+            <div style="font-weight:700;margin-bottom:10px;border-bottom:2px solid #FFD600;padding-bottom:4px;">Données joueur</div>
+            <ul style="list-style:none;padding:0;margin:0;line-height:1.7;">
+                <li><strong>Nom :</strong> {{ player.name }}</li>
+                <li><strong>Date de création :</strong> {{ player.created_at|date:'d/m/Y H:i' }}</li>
+            </ul>
+        </div>
+        <div style="flex:1 1 340px;min-width:280px;">
+            <div style="font-weight:700;margin-bottom:10px;border-bottom:2px solid #FFD600;padding-bottom:4px;">Stats</div>
+            <ul style="list-style:none;padding:0;margin:0;line-height:1.7;">
+                <li><strong>Missions jouées :</strong> {{ total_sessions_played }}</li>
+                <li><strong>Ratio vivant/mort :</strong> {{ dead_alive_ratio.alive }}/{{ dead_alive_ratio.dead }} ({{ dead_alive_ratio.ratio }}){% if dead_alive_ratio.survival_pct is not None %} — survie {{ dead_alive_ratio.survival_pct }} %{% endif %}</li>
+                <li><strong>Taux de victoire :</strong> {{ detail_stats.win_rate_display }}</li>
+                <li><strong>Verdicts :</strong>
+                    {% if detail_stats.verdict_counts %}
+                        {% for v in detail_stats.verdict_counts %}{{ v.label }}&nbsp;{{ v.count }}{% if not forloop.last %} · {% endif %}{% endfor %}
+                    {% else %}—{% endif %}
+                </li>
+                <li><strong>Durée moyenne :</strong> {% if detail_stats.avg_min is not None %}{{ detail_stats.avg_min }} min{% else %}—{% endif %}</li>
+                <li><strong>Temps de jeu :</strong> {% if detail_stats.total_hours %}{{ detail_stats.total_hours }} h{% else %}—{% endif %}</li>
+            </ul>
+        </div>
+    </div>
+    {% if detail_stats.top_roles or detail_stats.top_maps %}
+    <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:16px;margin:24px 0 8px;">
+        {% if detail_stats.top_roles %}
+        <div>
+            <div style="font-weight:700;margin-bottom:6px;border-bottom:2px solid #FFD600;padding-bottom:4px;">Top rôles</div>
+            {% for r in detail_stats.top_roles %}
+            <div style="display:flex;justify-content:space-between;padding:3px 0;border-bottom:1px solid #eee;"><span>{{ r.role }}</span><strong>{{ r.count }}</strong></div>
+            {% endfor %}
+        </div>
+        {% endif %}
+        {% if detail_stats.top_categories %}
+        <div>
+            <div style="font-weight:700;margin-bottom:6px;border-bottom:2px solid #FFD600;padding-bottom:4px;">Top catégories</div>
+            {% for r in detail_stats.top_categories %}
+            <div style="display:flex;justify-content:space-between;padding:3px 0;border-bottom:1px solid #eee;"><span>{{ r.category }}</span><strong>{{ r.count }}</strong></div>
+            {% endfor %}
+        </div>
+        {% endif %}
+        {% if detail_stats.top_maps %}
+        <div>
+            <div style="font-weight:700;margin-bottom:6px;border-bottom:2px solid #FFD600;padding-bottom:4px;">Cartes les plus jouées</div>
+            {% for m in detail_stats.top_maps %}
+            <div style="display:flex;justify-content:space-between;padding:3px 0;border-bottom:1px solid #eee;"><span>{{ m.display }}</span><strong>{{ m.count }}</strong></div>
+            {% endfor %}
+        </div>
+        {% endif %}
+    </div>
+    {% endif %}
     <h3 style="margin-top:36px;margin-bottom:18px;font-size:1.3em;font-weight:600;">Missions jouées</h3>
     <div style="display:flex;justify-content:space-between;align-items:center;">
         <div></div>

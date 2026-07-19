@@ -1,0 +1,483 @@
+{% extends 'gdc_storm/base.html' %}
+{% load dict_extras %}
+{% block title %}Stats - GDC Storm{% endblock %}
+{% block extra_head %}
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
+<style>
+.stats-page { max-width: 1500px; margin: 35px auto 0; padding: 0 32px 48px; }
+.stats-title { font-size: 2.1em; font-weight: 700; margin: 12px 0 8px; }
+.stats-subtitle { color: #666; margin-bottom: 24px; }
+.stats-kpis {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
+    gap: 14px;
+    margin-bottom: 28px;
+}
+.stats-kpi {
+    background: #fff;
+    border-radius: 14px;
+    box-shadow: 0 2px 12px #0001;
+    padding: 18px 16px;
+    text-align: center;
+}
+.stats-kpi .kpi-value { font-size: 1.85em; font-weight: 700; color: #111; line-height: 1.1; }
+.stats-kpi .kpi-label { font-size: 0.92em; color: #666; margin-top: 6px; }
+.stats-kpi.accent { background: #FFD600; }
+.stats-kpi.accent .kpi-value { color: #111; }
+.stats-fun {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+    gap: 12px;
+    margin-bottom: 28px;
+}
+.stats-fun-card {
+    background: #fff;
+    border-left: 5px solid #FFD600;
+    border-radius: 10px;
+    box-shadow: 0 2px 10px #0001;
+    padding: 14px 16px;
+}
+.stats-fun-card .fun-label { font-size: 0.85em; color: #888; text-transform: uppercase; letter-spacing: 0.03em; }
+.stats-fun-card .fun-value { font-size: 1.15em; font-weight: 650; margin-top: 4px; color: #222; word-break: break-word; }
+.stats-section {
+    background: #fff;
+    border-radius: 18px;
+    box-shadow: 0 2px 16px #0002;
+    padding: 22px 24px 28px;
+    margin-bottom: 24px;
+}
+.stats-section h2 {
+    font-size: 1.35em;
+    margin: 0 0 16px;
+    padding-bottom: 8px;
+    border-bottom: 2px solid #FFD600;
+}
+.stats-charts {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(320px, 1fr));
+    gap: 20px;
+}
+.stats-chart-box {
+    background: #fafafa;
+    border-radius: 12px;
+    padding: 14px;
+    min-height: 280px;
+}
+.stats-chart-box h3 { margin: 0 0 10px; font-size: 1.05em; color: #333; }
+.stats-chart-box.wide { grid-column: 1 / -1; min-height: 320px; }
+.stats-tables {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(420px, 1fr));
+    gap: 20px;
+}
+.stats-table-wrap { overflow-x: auto; }
+.stats-table-wrap table { width: 100%; border-collapse: collapse; font-size: 0.95em; }
+.stats-table-wrap th {
+    text-align: left;
+    padding: 8px 10px;
+    background: #111;
+    color: #FFD600;
+    font-weight: 600;
+}
+.stats-table-wrap td {
+    padding: 8px 10px;
+    border-bottom: 1px solid #eee;
+}
+.stats-table-wrap tr:nth-child(even) { background: #fffbe6; }
+.stats-table-wrap a { color: #1976d2; font-weight: 600; text-decoration: none; }
+.stats-table-wrap a:hover { text-decoration: underline; }
+.stats-empty { color: #888; font-style: italic; padding: 8px 0; }
+.stats-note { font-size: 0.85em; color: #888; margin-top: 8px; }
+</style>
+{% endblock %}
+{% block content %}
+<div class="stats-page">
+    <div class="stats-title">Statistiques GDC Storm</div>
+    <div class="stats-subtitle">Vue d’ensemble de l’activité de la communauté Grèce de Canards</div>
+
+    <div class="stats-kpis">
+        <div class="stats-kpi accent">
+            <div class="kpi-value">{{ missions_count }}</div>
+            <div class="kpi-label">Missions</div>
+        </div>
+        <div class="stats-kpi">
+            <div class="kpi-value">{{ sessions_count }}</div>
+            <div class="kpi-label">Sessions</div>
+        </div>
+        <div class="stats-kpi">
+            <div class="kpi-value">{{ players_count }}</div>
+            <div class="kpi-label">Joueurs</div>
+        </div>
+        <div class="stats-kpi">
+            <div class="kpi-value">{{ users_count }}</div>
+            <div class="kpi-label">Comptes actifs</div>
+        </div>
+        <div class="stats-kpi">
+            <div class="kpi-value">{% if global_win_rate is not None %}{{ global_win_rate }} %{% else %}—{% endif %}</div>
+            <div class="kpi-label">Taux de victoire<br><span style="font-size:0.85em;">({{ succes_count }}/{{ decisive_count }})</span></div>
+        </div>
+        <div class="stats-kpi">
+            <div class="kpi-value">{{ total_playtime_hours }} h</div>
+            <div class="kpi-label">Temps de jeu cumulé</div>
+        </div>
+        <div class="stats-kpi">
+            <div class="kpi-value">{% if avg_duration_min is not None %}{{ avg_duration_min }} min{% else %}—{% endif %}</div>
+            <div class="kpi-label">Durée moyenne</div>
+        </div>
+        <div class="stats-kpi">
+            <div class="kpi-value">{% if avg_players_per_session is not None %}{{ avg_players_per_session }}{% else %}—{% endif %}</div>
+            <div class="kpi-label">Joueurs / session</div>
+        </div>
+    </div>
+
+    <div class="stats-fun">
+        <div class="stats-fun-card">
+            <div class="fun-label">Session la plus longue</div>
+            <div class="fun-value">
+                {% if longest_session %}
+                    <a href="{% url 'session_detail' longest_session.id %}">{{ longest_session.name|mission_display_name }}</a>
+                    — {{ longest_session.duration_min }} min
+                {% else %}—{% endif %}
+            </div>
+        </div>
+        <div class="stats-fun-card">
+            <div class="fun-label">Carte la plus jouée</div>
+            <div class="fun-value">{{ most_played_map|default:"—" }}</div>
+        </div>
+        <div class="stats-fun-card">
+            <div class="fun-label">Rôle le plus populaire</div>
+            <div class="fun-value">{{ most_popular_role|default:"—" }}</div>
+        </div>
+        <div class="stats-fun-card">
+            <div class="fun-label">Jour le plus actif</div>
+            <div class="fun-value">{{ most_active_weekday|default:"—" }}</div>
+        </div>
+        <div class="stats-fun-card">
+            <div class="fun-label">Missions jamais jouées</div>
+            <div class="fun-value">
+                <a href="{% url 'mission_list' %}?sort=jouee&order=asc">{{ never_played_count }}</a>
+            </div>
+        </div>
+    </div>
+
+    <div class="stats-section">
+        <h2>Répartitions</h2>
+        <div class="stats-charts">
+            <div class="stats-chart-box">
+                <h3>Sessions par verdict</h3>
+                <canvas id="chartVerdict"></canvas>
+            </div>
+            <div class="stats-chart-box">
+                <h3>Missions par type</h3>
+                <canvas id="chartType"></canvas>
+            </div>
+            <div class="stats-chart-box">
+                <h3>Missions par statut</h3>
+                <canvas id="chartStatus"></canvas>
+            </div>
+            <div class="stats-chart-box">
+                <h3>Sessions par jour de la semaine</h3>
+                <canvas id="chartWeekday"></canvas>
+            </div>
+            <div class="stats-chart-box wide">
+                <h3>Évolution mensuelle (24 mois)</h3>
+                <canvas id="chartMonthly" height="90"></canvas>
+            </div>
+            <div class="stats-chart-box wide">
+                <h3>Heure de début des sessions</h3>
+                <canvas id="chartHour" height="80"></canvas>
+            </div>
+        </div>
+    </div>
+
+    <div class="stats-section">
+        <h2>Classements</h2>
+        <div class="stats-tables">
+
+            <div>
+                <h3>Top 10 missions les plus jouées</h3>
+                <div class="stats-table-wrap">
+                {% if top_missions %}
+                <table>
+                    <thead><tr><th>#</th><th>Mission</th><th>Carte</th><th>Sessions</th><th>Victoire</th></tr></thead>
+                    <tbody>
+                    {% for m in top_missions %}
+                        <tr>
+                            <td>{{ forloop.counter }}</td>
+                            <td><a href="{% url 'mission_detail' m.id %}">{{ m.name|mission_display_name }}</a></td>
+                            <td>{{ m.map_display }}</td>
+                            <td>{{ m.played_count }}</td>
+                            <td>{% if m.win_rate is not None %}{{ m.win_rate }} % ({{ m.succes_count }}/{{ m.decisive }}){% else %}—{% endif %}</td>
+                        </tr>
+                    {% endfor %}
+                    </tbody>
+                </table>
+                {% else %}<div class="stats-empty">Aucune donnée</div>{% endif %}
+                </div>
+            </div>
+
+            <div>
+                <h3>Top 10 cartes les plus jouées</h3>
+                <div class="stats-table-wrap">
+                {% if top_maps %}
+                <table>
+                    <thead><tr><th>#</th><th>Carte</th><th>Sessions</th><th>Victoire</th></tr></thead>
+                    <tbody>
+                    {% for m in top_maps %}
+                        <tr>
+                            <td>{{ forloop.counter }}</td>
+                            <td>{{ m.display }}</td>
+                            <td>{{ m.sessions_count }}</td>
+                            <td>{% if m.win_rate is not None %}{{ m.win_rate }} % ({{ m.succes_count }}/{{ m.decisive }}){% else %}—{% endif %}</td>
+                        </tr>
+                    {% endfor %}
+                    </tbody>
+                </table>
+                {% else %}<div class="stats-empty">Aucune donnée</div>{% endif %}
+                </div>
+            </div>
+
+            <div>
+                <h3>Top 10 joueurs les plus actifs</h3>
+                <div class="stats-table-wrap">
+                {% if top_players %}
+                <table>
+                    <thead><tr><th>#</th><th>Joueur</th><th>Sessions</th></tr></thead>
+                    <tbody>
+                    {% for p in top_players %}
+                        <tr>
+                            <td>{{ forloop.counter }}</td>
+                            <td><a href="{% url 'player_detail' p.id %}">{{ p.name }}</a></td>
+                            <td>{{ p.sessions_count }}</td>
+                        </tr>
+                    {% endfor %}
+                    </tbody>
+                </table>
+                {% else %}<div class="stats-empty">Aucune donnée</div>{% endif %}
+                </div>
+            </div>
+
+            <div>
+                <h3>Meilleur ratio vivant / mort</h3>
+                <div class="stats-table-wrap">
+                {% if top_survival %}
+                <table>
+                    <thead><tr><th>#</th><th>Joueur</th><th>Vivant</th><th>Mort</th><th>Ratio</th><th>Sessions</th></tr></thead>
+                    <tbody>
+                    {% for p in top_survival %}
+                        <tr>
+                            <td>{{ forloop.counter }}</td>
+                            <td><a href="{% url 'player_detail' p.id %}">{{ p.name }}</a></td>
+                            <td>{{ p.alive }}</td>
+                            <td>{{ p.dead }}</td>
+                            <td>{{ p.ratio_display }}</td>
+                            <td>{{ p.sessions_count }}</td>
+                        </tr>
+                    {% endfor %}
+                    </tbody>
+                </table>
+                {% else %}<div class="stats-empty">Aucune donnée</div>{% endif %}
+                </div>
+                <div class="stats-note">Minimum {{ min_sessions_for_ratio }} sessions pour être classé.</div>
+            </div>
+
+            <div>
+                <h3>Rôles les plus joués</h3>
+                <div class="stats-table-wrap">
+                {% if top_roles %}
+                <table>
+                    <thead><tr><th>#</th><th>Rôle (brut)</th><th>Occurrences</th></tr></thead>
+                    <tbody>
+                    {% for r in top_roles %}
+                        <tr>
+                            <td>{{ forloop.counter }}</td>
+                            <td>{{ r.role }}</td>
+                            <td>{{ r.count }}</td>
+                        </tr>
+                    {% endfor %}
+                    </tbody>
+                </table>
+                {% else %}<div class="stats-empty">Aucune donnée</div>{% endif %}
+                </div>
+            </div>
+
+            <div>
+                <h3>Catégories de rôles</h3>
+                <div class="stats-table-wrap">
+                {% if top_role_categories %}
+                <table>
+                    <thead><tr><th>#</th><th>Catégorie</th><th>Occurrences</th></tr></thead>
+                    <tbody>
+                    {% for r in top_role_categories %}
+                        <tr>
+                            <td>{{ forloop.counter }}</td>
+                            <td>{{ r.category }}</td>
+                            <td>{{ r.count }}</td>
+                        </tr>
+                    {% endfor %}
+                    </tbody>
+                </table>
+                {% else %}<div class="stats-empty">Aucune donnée</div>{% endif %}
+                </div>
+            </div>
+
+            <div>
+                <h3>Top auteurs de missions</h3>
+                <div class="stats-table-wrap">
+                {% if top_authors %}
+                <table>
+                    <thead><tr><th>#</th><th>Auteur</th><th>Missions</th></tr></thead>
+                    <tbody>
+                    {% for a in top_authors %}
+                        <tr>
+                            <td>{{ forloop.counter }}</td>
+                            <td>{{ a.authors }}</td>
+                            <td>{{ a.count }}</td>
+                        </tr>
+                    {% endfor %}
+                    </tbody>
+                </table>
+                {% else %}<div class="stats-empty">Aucune donnée</div>{% endif %}
+                </div>
+            </div>
+
+            <div>
+                <h3>Cartes — meilleur taux de victoire</h3>
+                <div class="stats-table-wrap">
+                {% if maps_best_winrate %}
+                <table>
+                    <thead><tr><th>#</th><th>Carte</th><th>Victoire</th><th>Occurrences</th></tr></thead>
+                    <tbody>
+                    {% for m in maps_best_winrate %}
+                        <tr>
+                            <td>{{ forloop.counter }}</td>
+                            <td>{{ m.display }}</td>
+                            <td>{{ m.win_rate }} %</td>
+                            <td>{{ m.decisive }}</td>
+                        </tr>
+                    {% endfor %}
+                    </tbody>
+                </table>
+                {% else %}<div class="stats-empty">Aucune donnée</div>{% endif %}
+                </div>
+                <div class="stats-note">Minimum {{ min_decisive_for_map_wr }} sessions Succès/Échec.</div>
+            </div>
+
+            <div>
+                <h3>Cartes — pire taux de victoire</h3>
+                <div class="stats-table-wrap">
+                {% if maps_worst_winrate %}
+                <table>
+                    <thead><tr><th>#</th><th>Carte</th><th>Victoire</th><th>Occurrences</th></tr></thead>
+                    <tbody>
+                    {% for m in maps_worst_winrate %}
+                        <tr>
+                            <td>{{ forloop.counter }}</td>
+                            <td>{{ m.display }}</td>
+                            <td>{{ m.win_rate }} %</td>
+                            <td>{{ m.decisive }}</td>
+                        </tr>
+                    {% endfor %}
+                    </tbody>
+                </table>
+                {% else %}<div class="stats-empty">Aucune donnée</div>{% endif %}
+                </div>
+                <div class="stats-note">Minimum {{ min_decisive_for_map_wr }} sessions Succès/Échec.</div>
+            </div>
+
+        </div>
+    </div>
+</div>
+
+{{ sessions_verdict_chart|json_script:"data-verdict" }}
+{{ missions_type_chart|json_script:"data-type" }}
+{{ missions_status_chart|json_script:"data-status" }}
+{{ weekday_chart|json_script:"data-weekday" }}
+{{ monthly_chart|json_script:"data-monthly" }}
+{{ hour_chart|json_script:"data-hour" }}
+<script>
+(function() {
+    const palette = ['#FFD600', '#1976d2', '#43a047', '#e53935', '#8e24aa', '#fb8c00', '#00897b', '#5d4037', '#546e7a', '#c0ca33'];
+    if (typeof Chart === 'undefined') return;
+
+    function read(id) {
+        const el = document.getElementById(id);
+        return el ? JSON.parse(el.textContent) : { labels: [], data: [] };
+    }
+
+    function doughnut(canvasId, payload) {
+        new Chart(document.getElementById(canvasId), {
+            type: 'doughnut',
+            data: {
+                labels: payload.labels || [],
+                datasets: [{ data: payload.data || [], backgroundColor: palette }]
+            },
+            options: { responsive: true, plugins: { legend: { position: 'bottom' } } }
+        });
+    }
+
+    function bars(canvasId, payload, horizontal) {
+        new Chart(document.getElementById(canvasId), {
+            type: 'bar',
+            data: {
+                labels: payload.labels || [],
+                datasets: [{
+                    label: 'Nombre',
+                    data: payload.data || [],
+                    backgroundColor: '#FFD600',
+                    borderColor: '#111',
+                    borderWidth: 1
+                }]
+            },
+            options: {
+                responsive: true,
+                indexAxis: horizontal ? 'y' : 'x',
+                plugins: { legend: { display: false } },
+                scales: {
+                    y: { beginAtZero: true, ticks: { precision: 0 } },
+                    x: { beginAtZero: true, ticks: { precision: 0 } }
+                }
+            }
+        });
+    }
+
+    doughnut('chartVerdict', read('data-verdict'));
+    bars('chartType', read('data-type'), false);
+    doughnut('chartStatus', read('data-status'));
+    bars('chartWeekday', read('data-weekday'), false);
+
+    const monthly = read('data-monthly');
+    new Chart(document.getElementById('chartMonthly'), {
+        type: 'line',
+        data: {
+            labels: monthly.labels || [],
+            datasets: [
+                {
+                    label: 'Sessions',
+                    data: monthly.sessions || [],
+                    borderColor: '#1976d2',
+                    backgroundColor: 'rgba(25,118,210,0.15)',
+                    tension: 0.25,
+                    fill: true
+                },
+                {
+                    label: 'Missions publiées',
+                    data: monthly.missions || [],
+                    borderColor: '#FFD600',
+                    backgroundColor: 'rgba(255,214,0,0.2)',
+                    tension: 0.25,
+                    fill: true
+                }
+            ]
+        },
+        options: {
+            responsive: true,
+            plugins: { legend: { position: 'bottom' } },
+            scales: { y: { beginAtZero: true, ticks: { precision: 0 } } }
+        }
+    });
+
+    bars('chartHour', read('data-hour'), false);
+})();
+</script>
+{% endblock %}

@@ -20,21 +20,68 @@
         </div>
     </div>
     <div class="user-info-block" style="margin-bottom:32px;">
-        <ul class="user-info" style="list-style:none;padding:0;margin:0;">
-            <li><strong>Nom d'utilisateur :</strong> {{ user_profile.username }}</li>
-            <li><strong>Rôle :</strong> {{ user_role }}</li>
-            <li><strong>Players associés :</strong>
-                {% if user_profile.players.all %}
-                    {% for player in user_profile.players.all %}
-                        <a href="{% url 'player_detail' player.id %}" style="color:#222;font-weight:600;text-decoration:underline;">{{ player.name }}</a>{% if not forloop.last %}, {% endif %}
-                    {% empty %}-{% endfor %}
-                {% else %}-{% endif %}
-            </li>
-            <li><strong>Date de création :</strong> {% if oldest_player_created %}{{ oldest_player_created|date:'d/m/Y H:i' }}{% else %}—{% endif %}</li>
-            <li><strong>Missions jouées :</strong> {{ total_sessions_played }}</li>
-            <li><strong>Ratio vivant/mort :</strong> {{ dead_alive_ratio.alive }}/{{ dead_alive_ratio.dead }} ({{ dead_alive_ratio.ratio }})</li>
-            <li><strong>Missions publiées :</strong> {{ total_missions_published }}</li>
-        </ul>
+        <div style="display:flex;flex-wrap:wrap;gap:28px;align-items:flex-start;">
+            <div style="flex:1 1 280px;min-width:240px;">
+                <div style="font-weight:700;margin-bottom:10px;border-bottom:2px solid #FFD600;padding-bottom:4px;">Données joueur</div>
+                <ul class="user-info" style="list-style:none;padding:0;margin:0;line-height:1.7;">
+                    <li><strong>Nom d'utilisateur :</strong> {{ user_profile.username }}</li>
+                    <li><strong>Rôle :</strong> {{ user_role }}</li>
+                    <li><strong>Players associés :</strong>
+                        {% if user_profile.players.all %}
+                            {% for player in user_profile.players.all %}
+                                <a href="{% url 'player_detail' player.id %}" style="color:#222;font-weight:600;text-decoration:underline;">{{ player.name }}</a>{% if not forloop.last %}, {% endif %}
+                            {% empty %}-{% endfor %}
+                        {% else %}-{% endif %}
+                    </li>
+                    <li><strong>Date de création :</strong> {% if oldest_player_created %}{{ oldest_player_created|date:'d/m/Y H:i' }}{% else %}—{% endif %}</li>
+                    <li><strong>Missions publiées :</strong> {{ total_missions_published }}</li>
+                </ul>
+            </div>
+            <div style="flex:1 1 340px;min-width:280px;">
+                <div style="font-weight:700;margin-bottom:10px;border-bottom:2px solid #FFD600;padding-bottom:4px;">Stats</div>
+                <ul class="user-info" style="list-style:none;padding:0;margin:0;line-height:1.7;">
+                    <li><strong>Missions jouées :</strong> {{ total_sessions_played }}</li>
+                    <li><strong>Ratio vivant/mort :</strong> {{ dead_alive_ratio.alive }}/{{ dead_alive_ratio.dead }} ({{ dead_alive_ratio.ratio }}){% if dead_alive_ratio.survival_pct is not None %} — survie {{ dead_alive_ratio.survival_pct }} %{% endif %}</li>
+                    <li><strong>Taux de victoire :</strong> {{ detail_stats.win_rate_display }}</li>
+                    <li><strong>Verdicts :</strong>
+                        {% if detail_stats.verdict_counts %}
+                            {% for v in detail_stats.verdict_counts %}{{ v.label }}&nbsp;{{ v.count }}{% if not forloop.last %} · {% endif %}{% endfor %}
+                        {% else %}—{% endif %}
+                    </li>
+                    <li><strong>Durée moyenne :</strong> {% if detail_stats.avg_min is not None %}{{ detail_stats.avg_min }} min{% else %}—{% endif %}</li>
+                    <li><strong>Temps de jeu :</strong> {% if detail_stats.total_hours %}{{ detail_stats.total_hours }} h{% else %}—{% endif %}</li>
+                    <li><strong>Victoire missions publiées :</strong> {{ detail_stats.published_win_rate_display }}{% if detail_stats.published_sessions_count %} <span style="color:#888;">({{ detail_stats.published_sessions_count }} sessions)</span>{% endif %}</li>
+                </ul>
+            </div>
+        </div>
+        {% if detail_stats.top_roles or detail_stats.top_maps %}
+        <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:16px;margin-top:24px;">
+            {% if detail_stats.top_roles %}
+            <div>
+                <div style="font-weight:700;margin-bottom:6px;border-bottom:2px solid #FFD600;padding-bottom:4px;">Top rôles</div>
+                {% for r in detail_stats.top_roles %}
+                <div style="display:flex;justify-content:space-between;padding:3px 0;border-bottom:1px solid #eee;"><span>{{ r.role }}</span><strong>{{ r.count }}</strong></div>
+                {% endfor %}
+            </div>
+            {% endif %}
+            {% if detail_stats.top_categories %}
+            <div>
+                <div style="font-weight:700;margin-bottom:6px;border-bottom:2px solid #FFD600;padding-bottom:4px;">Top catégories</div>
+                {% for r in detail_stats.top_categories %}
+                <div style="display:flex;justify-content:space-between;padding:3px 0;border-bottom:1px solid #eee;"><span>{{ r.category }}</span><strong>{{ r.count }}</strong></div>
+                {% endfor %}
+            </div>
+            {% endif %}
+            {% if detail_stats.top_maps %}
+            <div>
+                <div style="font-weight:700;margin-bottom:6px;border-bottom:2px solid #FFD600;padding-bottom:4px;">Cartes les plus jouées</div>
+                {% for m in detail_stats.top_maps %}
+                <div style="display:flex;justify-content:space-between;padding:3px 0;border-bottom:1px solid #eee;"><span>{{ m.display }}</span><strong>{{ m.count }}</strong></div>
+                {% endfor %}
+            </div>
+            {% endif %}
+        </div>
+        {% endif %}
     </div>
     <div class="user-tabs" style="margin-bottom:24px;">
         <div style="display:flex;gap:0;">
