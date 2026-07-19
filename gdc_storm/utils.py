@@ -1,5 +1,55 @@
 # Fonctions utilitaires
+import re
+
 from .models import Mission
+
+
+def strip_mission_version(mission_name):
+    """Retourne (nom sans suffixe -Vn/-vn, numéro de version ou '')."""
+    if not mission_name:
+        return '', ''
+    version_match = re.search(r'-[Vv](\d+)$', mission_name)
+    if not version_match:
+        return mission_name, ''
+    version = version_match.group(1)
+    name_no_version = re.sub(r'-[Vv]\d+$', '', mission_name)
+    return name_no_version, version
+
+
+def normalize_map_code(map_name):
+    """Normalise le code carte (worldName) en minuscules."""
+    return (map_name or '').strip().lower()
+
+
+def find_missions_for_session(mission_name, map_name):
+    """
+    Missions dont map et nom correspondent à la session (casse ignorée).
+    Retourne (matches, name_no_version, version, map_normalized).
+    """
+    name_no_version, version = strip_mission_version(mission_name or '')
+    map_normalized = normalize_map_code(map_name)
+    if not name_no_version or not map_normalized:
+        return [], name_no_version, version, map_normalized
+    name_key = name_no_version.casefold()
+    matches = [
+        m
+        for m in Mission.objects.filter(map__iexact=map_normalized)
+        if (m.name or '').casefold() == name_key
+    ]
+    return matches, name_no_version, version, map_normalized
+
+
+def find_mission_for_session(mission_name, map_name):
+    """
+    Première mission correspondante, ou None.
+    Utilisé à la création de session (comportement historique : premier match).
+    """
+    matches, name_no_version, version, map_normalized = find_missions_for_session(
+        mission_name, map_name
+    )
+    mission = matches[0] if matches else None
+    return mission, name_no_version, version, map_normalized
+
 
 def parse_mission_filename(filename):
     import re
