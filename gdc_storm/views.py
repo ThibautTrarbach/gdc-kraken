@@ -1913,14 +1913,21 @@ def session_detail(request, session_id):
     vivant_count = session.players.filter(status='VIVANT').count()
     session_players = session.players.select_related('player').all()
     if session.mission is None:
-        import re
-        # Enlève la version et le préfixe CPC-XX[YY]-
-        name_no_version = re.sub(r'-[Vv]\d+$', '', session.name)
-        name_clean = re.sub(r'^CPC-\w+\[\d+\]-', '', name_no_version)
-        all_missions = Mission.objects.filter(map=session.map)
+        from .utils import normalize_map_code, strip_mission_version
+        # Enlève la version et le préfixe CPC-XX[YY]- (matching UI, casse ignorée)
+        name_no_version, _ = strip_mission_version(session.name or '')
+        name_clean = re.sub(
+            r'^CPC-\w+\[\d+\]-', '', name_no_version, flags=re.IGNORECASE
+        ).casefold()
+        map_norm = normalize_map_code(session.map)
+        all_missions = (
+            Mission.objects.filter(map__iexact=map_norm) if map_norm else Mission.objects.none()
+        )
         missions_candidates = [
             m for m in all_missions
-            if re.sub(r'^CPC-\w+\[\d+\]-', '', m.name) == name_clean
+            if re.sub(
+                r'^CPC-\w+\[\d+\]-', '', m.name or '', flags=re.IGNORECASE
+            ).casefold() == name_clean
         ]
         show_associate_btn = request.user.is_authenticated and request.user.is_superuser
         no_mission_found = len(missions_candidates) == 0
@@ -1929,6 +1936,8 @@ def session_detail(request, session_id):
             try:
                 mission = Mission.objects.get(id=mission_id)
                 session.mission = mission
+                if map_norm:
+                    session.map = map_norm
                 session.save()
                 messages.success(request, "Mission associée avec succès à la session.")
                 return redirect('session_detail', session_id=session.id)

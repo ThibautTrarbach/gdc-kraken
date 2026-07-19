@@ -1,11 +1,11 @@
-import re
 import datetime
 from django.views.decorators.csrf import csrf_exempt
 from django.views.decorators.http import require_http_methods
 from django.http import JsonResponse
-from .models import Mission, GameSession, GameSessionPlayer, Player
+from .models import GameSession, GameSessionPlayer, Player
 from functools import wraps
 from .models import ApiToken
+from .utils import find_mission_for_session
 
 def require_api_token(view_func):
     @wraps(view_func)
@@ -29,18 +29,9 @@ def api_create_gamesession(request):
     mission_name = data.get('mission_name')
     map_name = data.get('map')
     start_time = data.get('start_time')
-    version = ''
-    mission_name_no_version = mission_name
-    version_match = re.search(r'-[Vv](\d+)$', mission_name)
-    if version_match:
-        version = version_match.group(1)
-        mission_name_no_version = re.sub(r'-[Vv]\d+$', '', mission_name)
-    mission_qs = Mission.objects.filter(map=map_name)
-    mission = None
-    for m in mission_qs:
-        if m.name == mission_name_no_version:
-            mission = m
-            break
+    mission, mission_name_no_version, version, map_normalized = find_mission_for_session(
+        mission_name, map_name
+    )
     try:
         start_dt = datetime.datetime.fromtimestamp(float(start_time))
     except Exception:
@@ -48,7 +39,7 @@ def api_create_gamesession(request):
     session = GameSession.objects.create(
         mission=mission,
         name=mission_name_no_version,
-        map=map_name,
+        map=map_normalized,
         version=version,
         start_time=start_dt
     )
