@@ -192,6 +192,46 @@ class SoftCreateUpdateTest(TestCase):
     @patch('gdc_storm.views.extract_briefing_from_pbo')
     @patch('gdc_storm.views.extract_mission_data_from_pbo')
     @patch('gdc_storm.views.PBOFile.read_file')
+    def test_create_with_status_inconnu(
+        self, mock_read, mock_extract, mock_briefing, mock_save
+    ):
+        mock_read.return_value = self._mock_pbo(binarized=False, has_hc=True)
+        mock_extract.return_value = (
+            {
+                'author': 'A',
+                'onLoadMission': 'x',
+                'overviewText': 'y',
+                'loadScreen': None,
+                'minPlayers': '1',
+            },
+            [],
+        )
+        mock_briefing.return_value = ([], [])
+        mock_save.return_value = None
+
+        request = self.factory.post('/recup/commit/')
+        request.user = self.uploader
+        mission, msg = create_mission_from_pbo(
+            request,
+            self.temp_path,
+            'CPC-CO[20]-InconnuStatus-V1.altis.pbo',
+            'CPC-CO[20]-InconnuStatus',
+            'CO',
+            20,
+            'V1',
+            'altis',
+            strict=False,
+            owner_user=self.recup,
+            status=Mission.STATUS_INCONNU,
+        )
+        self.assertIsNotNone(mission)
+        self.assertEqual(mission.status, Mission.STATUS_INCONNU)
+        self.assertIsNone(msg)
+
+    @patch('gdc_storm.views.save_pbo_to_storage')
+    @patch('gdc_storm.views.extract_briefing_from_pbo')
+    @patch('gdc_storm.views.extract_mission_data_from_pbo')
+    @patch('gdc_storm.views.PBOFile.read_file')
     def test_strict_create_rejects_no_hc(
         self, mock_read, mock_extract, mock_briefing, mock_save
     ):
@@ -699,6 +739,7 @@ class RecupEndpointsTest(TestCase):
         kwargs = mock_create.call_args.kwargs
         self.assertEqual(kwargs['strict'], False)
         self.assertEqual(kwargs['owner_user'].username, RECUP_USERNAME)
+        self.assertEqual(kwargs['status'], Mission.STATUS_INCONNU)
 
     @patch('gdc_storm.views.update_mission_from_pbo')
     def test_commit_update_preserve_owner_flag(self, mock_update):

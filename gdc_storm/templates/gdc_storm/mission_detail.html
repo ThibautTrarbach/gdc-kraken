@@ -1,5 +1,5 @@
 {% extends 'gdc_storm/base.html' %}
-{% load static %}
+{% load static dict_extras %}
 {% block title %}Détail de la mission - GDC Storm{% endblock %}
 {% block content %}
 {% if messages %}
@@ -12,14 +12,17 @@
 <div class="missions-container" style="max-width:none;margin:10px 10px 10px 10px;padding:0 0 32px 0;border-radius:18px;background:#fff;box-shadow:0 2px 16px #0002;">
     <!-- Bandeau titre + actions -->
     <div style="display:flex;align-items:center;justify-content:space-between;padding:32px 40px 24px 40px;background:#222;color:#fff;border-radius:18px 18px 0 0;">
-        <div style="font-size:2.1em;font-weight:800;letter-spacing:0.5px;">
-            {{ mission.name }}
+        <div style="font-size:2.1em;font-weight:800;letter-spacing:0.5px;" title="{{ mission.name }}">
+            {{ mission.name|mission_display_name }}
             {% if mission.pbo_missing %}
             <span style="display:inline-block;margin-left:12px;vertical-align:middle;padding:4px 12px;border-radius:6px;background:#ffeaea;color:#b71c1c;font-weight:700;font-size:0.42em;letter-spacing:0;">PBO manquant</span>
             {% endif %}
         </div>
         <div style="display:flex;gap:16px;align-items:center;position:relative;">
             {% if user.is_authenticated %}
+                {% if user.is_superuser %}
+                    <button id="open-owner-popup" class="home-btn" style="background:#1976d2;color:#fff;padding:8px 28px;font-size:1.08em;min-width:130px;">Propriétaire</button>
+                {% endif %}
                 {% if user.is_superuser or mission.user == user %}
                     <button id="open-status-popup" class="home-btn" style="background:#1976d2;color:#fff;padding:8px 28px;font-size:1.08em;min-width:130px;">Statut</button>
                     {% if mission.game_sessions.exists %}
@@ -47,6 +50,7 @@
         <div style="background:#d4edda;color:#155724;padding:12px 18px;border-radius:0 0 0 0;margin-bottom:18px;text-align:center;font-weight:600;">La mission a été publiée avec succès !</div>
     {% endif %}
     <!-- Popup statut -->
+    {% if status_form %}
     <div id="status-popup" style="display:none;position:fixed;top:0;left:0;width:100vw;height:100vh;background:#0007;z-index:2000;align-items:center;justify-content:center;">
         <form method="post" id="status-form" style="background:#fff;padding:32px 32px 24px 32px;border-radius:12px;box-shadow:0 2px 24px #0006;min-width:320px;max-width:90vw;display:flex;flex-direction:column;gap:18px;">
             {% csrf_token %}
@@ -58,6 +62,21 @@
             </div>
         </form>
     </div>
+    {% endif %}
+    <!-- Popup propriétaire -->
+    {% if owner_form %}
+    <div id="owner-popup" style="display:none;position:fixed;top:0;left:0;width:100vw;height:100vh;background:#0007;z-index:2000;align-items:center;justify-content:center;">
+        <form method="post" id="owner-form" style="background:#fff;padding:32px 32px 24px 32px;border-radius:12px;box-shadow:0 2px 24px #0006;min-width:320px;max-width:90vw;display:flex;flex-direction:column;gap:18px;">
+            {% csrf_token %}
+            <div style="font-size:1.2em;font-weight:700;margin-bottom:8px;">Modifier le propriétaire de la mission</div>
+            {{ owner_form.user }}
+            <div style="display:flex;gap:12px;justify-content:flex-end;">
+                <button type="button" id="cancel-owner-popup" style="background:#eee;color:#222;padding:6px 18px;border-radius:6px;border:none;min-width:110px;">Annuler</button>
+                <button type="submit" name="update_owner" class="home-btn" style="background:#1976d2;color:#fff;padding:6px 18px;border-radius:6px;border:none;font-weight:600;min-width:110px;">Mettre à jour</button>
+            </div>
+        </form>
+    </div>
+    {% endif %}
     <!-- Layout principal -->
     <div style="display:flex;gap:2%;padding:40px 40px 40px 40px;">
         <!-- Colonne gauche (infos) -->
@@ -80,6 +99,7 @@
                 <tr><th>Joueurs</th><td>{% if mission.min_players %}Min {{ mission.min_players }} - {% endif %}Max {{ mission.max_players }}</td></tr>
                 <tr><th>Texte lobby</th><td>{{ mission.overviewText|linebreaksbr|default:'—' }}</td></tr>
                 <tr><th>Date de publication</th><td>{{ mission.publication_date|date:'d/m/Y H:i' }}</td></tr>
+                <tr><th>Ratio victoire</th><td>{{ win_rate_display }}</td></tr>
                 <tr><th>Statut</th><td>
                     {% if mission.status == 'JOUABLE' %}
                         <span style="vertical-align:middle;display:inline-block;margin-right:6px;color:#43a047;font-size:1.2em;">&#10003;</span>
@@ -137,8 +157,8 @@
                             <tbody>
                                 {% for s in sessions_data %}
                                 <tr class="{% if s.verdict == 'SUCCES' %}session-row-succes{% elif s.verdict == 'ECHEC' %}session-row-echec{% elif s.verdict|upper == 'PVP' %}session-row-pvp{% elif s.verdict == 'TRAINING' %}session-row-training{% else %}session-row-indeterminee{% endif %}">
-                                    <td style="max-width:300px;overflow-x:auto;">
-                                        <a href="{% url 'session_detail' s.id %}" style="color:#1976d2;font-weight:600;text-decoration:underline;">{{ s.name }}</a>
+                                    <td style="max-width:300px;overflow-x:auto;" title="{{ s.name }}">
+                                        <a href="{% url 'session_detail' s.id %}" style="color:inherit;font-weight:600;text-decoration:none;">{{ s.name|mission_display_name }}</a>
                                     </td>
                                     <td>{{ s.start_time|date:'d/m/Y H:i' }}</td>
                                     <td>{% if s.duration_min is not None %}{{ s.duration_min }} min{% else %}—{% endif %}</td>
@@ -171,12 +191,30 @@ if (cancelStatusBtn) {
         document.getElementById('status-popup').style.display = 'none';
     };
 }
-// Fermer la popup si clic en dehors du formulaire
+// Popup propriétaire
+var openOwnerBtn = document.getElementById('open-owner-popup');
+if (openOwnerBtn) {
+    openOwnerBtn.onclick = function() {
+        document.getElementById('owner-popup').style.display = 'flex';
+    };
+}
+var cancelOwnerBtn = document.getElementById('cancel-owner-popup');
+if (cancelOwnerBtn) {
+    cancelOwnerBtn.onclick = function() {
+        document.getElementById('owner-popup').style.display = 'none';
+    };
+}
+// Fermer les popups si clic en dehors du formulaire
 window.addEventListener('click', function(e) {
-    var popup = document.getElementById('status-popup');
+    var statusPopup = document.getElementById('status-popup');
     var statusForm = document.getElementById('status-form');
-    if (popup && popup.style.display === 'flex' && statusForm && !statusForm.contains(e.target) && e.target.id !== 'open-status-popup') {
-        popup.style.display = 'none';
+    if (statusPopup && statusPopup.style.display === 'flex' && statusForm && !statusForm.contains(e.target) && e.target.id !== 'open-status-popup') {
+        statusPopup.style.display = 'none';
+    }
+    var ownerPopup = document.getElementById('owner-popup');
+    var ownerForm = document.getElementById('owner-form');
+    if (ownerPopup && ownerPopup.style.display === 'flex' && ownerForm && !ownerForm.contains(e.target) && e.target.id !== 'open-owner-popup') {
+        ownerPopup.style.display = 'none';
     }
 });
 // Onglets Briefing/Sessions

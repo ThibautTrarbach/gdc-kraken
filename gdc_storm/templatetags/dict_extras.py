@@ -13,9 +13,18 @@ def get_item(dictionary, key):
 
 
 @register.filter
-def mission_short_name(name):
-    """Retire le préfixe CPC-TYPE[NN]- pour l'affichage."""
+def mission_display_name(name):
+    """Retire le préfixe CPC-TYPE[NN]- et remplace -/_ par des espaces."""
     if not name:
         return ''
-    match = _CPC_PREFIX_RE.match(str(name))
-    return match.group(1) if match else name
+    text = str(name)
+    match = _CPC_PREFIX_RE.match(text)
+    if match:
+        text = match.group(1)
+    return text.replace('-', ' ').replace('_', ' ')
+
+
+@register.filter
+def mission_short_name(name):
+    """Alias historique : même rendu lisible que mission_display_name."""
+    return mission_display_name(name)

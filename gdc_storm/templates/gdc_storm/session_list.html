@@ -79,8 +79,8 @@
         <tbody id="sessions-table-body">
     {% for s in sessions_data %}
         <tr class="session-row-{% if s.verdict == 'SUCCES' %}succes{% elif s.verdict == 'ECHEC' %}echec{% elif s.verdict|upper == 'PVP' %}pvp{% elif s.verdict == 'TRAINING' %}training{% else %}indeterminee{% endif %}" style="white-space:nowrap;overflow-x:auto;">
-                <td style="max-width:300px;overflow-x:auto;">
-                    <a href="{% url 'session_detail' s.id %}" style="color:#1976d2;font-weight:600;text-decoration:underline;">{{ s.name }}</a>
+                <td style="max-width:300px;overflow-x:auto;" title="{{ s.name }}">
+                    <a href="{% url 'session_detail' s.id %}" style="color:inherit;font-weight:600;text-decoration:none;">{{ s.name|mission_display_name }}</a>
                 </td>
                 <td>{{ map_displays|get_item:s.id }}</td>
                 <td>{{ s.start_time|date:'d/m/Y H:i' }}</td>

@@ -117,6 +117,7 @@
                     <label><input type="checkbox" data-col-toggle="statut" checked> Statut</label>
                     <label><input type="checkbox" data-col-toggle="joueurs" checked> Min / Max</label>
                     <label><input type="checkbox" data-col-toggle="jouee" checked> Sessions</label>
+                    <label><input type="checkbox" data-col-toggle="victoire" checked> Ratio victoire</label>
                     <label><input type="checkbox" data-col-toggle="derniere" checked> Dernière fois</label>
                 </div>
             </div>
@@ -227,6 +228,16 @@
                         {% endif %}
                     </a>
                 </th>
+                <th class="col-victoire" data-col="victoire" style="white-space:nowrap;vertical-align:top;text-align:center;padding-left:6px;padding-right:6px;">
+                    <a href="#" onclick="setSort('victoire');return false;" style="text-decoration:none;color:inherit;" title="Ratio de victoire (Succès / Succès+Échec)">
+                        Ratio victoire
+                        {% if sort == 'victoire' %}
+                            {% if order == 'asc' %}<span style="color:#222;">▲</span>{% else %}<span style="color:#222;">▼</span>{% endif %}
+                        {% else %}
+                            <span style="color:#bbb;">▲</span>
+                        {% endif %}
+                    </a>
+                </th>
                 <th class="col-derniere" data-col="derniere" style="white-space:nowrap;vertical-align:top;">
                     <a href="#" onclick="setSort('derniere');return false;" style="text-decoration:none;color:inherit;">
                         Dernière fois
@@ -253,7 +264,7 @@
                             data-max="{{ mission.max_players }}">
                                 <td class="col-type" data-col="type">{{ mission.get_type_display }}</td>
                                 <td class="col-nom" data-col="nom" style="white-space:nowrap;overflow-x:auto;max-width:300px;" title="{{ mission.name }}">
-                                        <a href="{% url 'mission_detail' mission.id %}" style="color:#1976d2;font-weight:600;text-decoration:underline;">{{ mission.name|mission_short_name }}</a>
+                                        <a href="{% url 'mission_detail' mission.id %}" style="color:inherit;font-weight:600;text-decoration:none;">{{ mission.name|mission_display_name }}</a>
                                 </td>
                                 <td class="col-carte" data-col="carte">{{ map_display }}</td>
                                 <td class="col-auteur" data-col="auteur" style="max-width:120px;word-break:break-word;white-space:normal;">
@@ -269,6 +280,7 @@
                                 <td class="col-joueurs" data-col="joueurs">{% if mission.min_players %}{{ mission.min_players }}{% else %}-{% endif %}</td>
                                 <td class="col-joueurs" data-col="joueurs">{{ mission.max_players }}</td>
                                 <td class="col-jouee" data-col="jouee" style="text-align:center;padding-left:6px;padding-right:6px;">{{ mission.played_count|default:0 }}</td>
+                                <td class="col-victoire" data-col="victoire" style="text-align:center;padding-left:6px;padding-right:6px;">{{ mission_win_rates|get_item:mission.id }}</td>
                                 <td class="col-derniere" data-col="derniere">
                                     {% if mission.last_played_at %}
                                         {{ mission.last_played_at|date:'d/m/Y' }}
@@ -285,7 +297,7 @@
     <script>
     const COL_STORAGE_KEY = 'missionListVisibleCols';
     const DEFAULT_HIDDEN_COLS = ['type', 'version', 'date'];
-    const ALL_COLS = ['type', 'nom', 'carte', 'auteur', 'version', 'date', 'statut', 'joueurs', 'jouee', 'derniere'];
+    const ALL_COLS = ['type', 'nom', 'carte', 'auteur', 'version', 'date', 'statut', 'joueurs', 'jouee', 'victoire', 'derniere'];
 
     function getVisibleCols() {
         try {

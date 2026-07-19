@@ -193,7 +193,7 @@ def get_recup_user():
 
 from .models import Mission, MapName, Player, GameSession, GameSessionPlayer, ApiToken
 from .models import LegacyRole, LegacyMission, LegacyImportError, LegacyGameSession, LegacyMapNames, LegacyGameSessionPlayerRole, LegacyPlayers
-from .forms import MissionStatusForm
+from .forms import MissionOwnerForm, MissionStatusForm
 from gdc_storm.utils import (
     parse_mission_filename,
     parse_mission_filename_lenient,
@@ -1395,6 +1395,7 @@ def recup_commit(request):
                     map_name,
                     strict=False,
                     owner_user=recup_user,
+                    status=Mission.STATUS_INCONNU,
                 )
             elif current_action == 'update':
                 existing_id = details.get('existing_mission_id')
@@ -1519,15 +1520,24 @@ def mission_list(request):
         'carte': 'map',
         'date': 'publication_date',
         'jouee': 'played_count',
+        'victoire': 'win_rate',
         'derniere': 'last_played_at',
         'id': 'id',
     }
     sort_field = sort_fields.get(sort, 'id')
 
-    # Ajoute les infos "combien de fois jouée" + "dernière fois jouée"
+    # Ajoute les infos "combien de fois jouée" + "dernière fois jouée" + taux de victoire
     missions_qs = Mission.objects.select_related('user').annotate(
         played_count=Count('game_sessions'),
         last_played_at=Max('game_sessions__start_time'),
+        succes_count=Count(
+            'game_sessions',
+            filter=Q(game_sessions__verdict=GameSession.VERDICT_SUCCES),
+        ),
+        echec_count=Count(
+            'game_sessions',
+            filter=Q(game_sessions__verdict=GameSession.VERDICT_ECHEC),
+        ),
     )
 
     if sort == 'carte':
@@ -1535,6 +1545,15 @@ def mission_list(request):
         missions = list(missions_qs)
         map_display = lambda m: get_map_display(m.map).lower() if get_map_display(m.map) else ''
         missions.sort(key=map_display, reverse=(order == 'desc'))
+    elif sort == 'victoire':
+        missions = list(missions_qs)
+        for m in missions:
+            decisive = m.succes_count + m.echec_count
+            m.win_rate = round(100 * m.succes_count / decisive) if decisive else None
+        missions.sort(
+            key=lambda m: (m.win_rate is not None, m.win_rate or 0),
+            reverse=(order == 'desc'),
+        )
     else:
         if order == 'desc':
             sort_field = '-' + sort_field
@@ -1542,8 +1561,9 @@ def mission_list(request):
     map_display_cache = get_map_display_cache()
     map_displays = {m.id: map_display_cache.get(m.map, m.map) for m in missions}
     full_names = {m.id: m.name for m in missions}
-    # Prépare un mapping mission_id -> auteur à afficher
+    # Prépare un mapping mission_id -> auteur à afficher + taux de victoire
     mission_authors_display = {}
+    mission_win_rates = {}
     for m in missions:
         if m.authors and m.authors.strip() != 'Non renseigné':
             mission_authors_display[m.id] = m.authors
@@ -1551,11 +1571,20 @@ def mission_list(request):
             mission_authors_display[m.id] = m.user.username
         else:
             mission_authors_display[m.id] = 'Non renseigné'
+        decisive = m.succes_count + m.echec_count
+        if decisive:
+            rate = round(100 * m.succes_count / decisive)
+            mission_win_rates[m.id] = f'{rate} % ({m.succes_count}/{decisive})'
+            m.win_rate = rate
+        else:
+            mission_win_rates[m.id] = '—'
+            m.win_rate = None
     return render(request, 'gdc_storm/mission_list.html', {
         'missions': missions,
         'map_displays': map_displays,
         'full_names': full_names,
         'mission_authors_display': mission_authors_display,
+        'mission_win_rates': mission_win_rates,
         'sort': sort,
         'order': order
     })
@@ -1566,7 +1595,9 @@ def mission_detail(request, mission_id):
     success = request.GET.get('success') == '1'
     map_display = get_map_display(mission.map)
     can_edit_status = request.user.is_superuser or (mission.user == request.user)
+    can_edit_owner = request.user.is_superuser
     status_form = None
+    owner_form = None
     if can_edit_status:
         if request.method == 'POST' and 'update_status' in request.POST:
             status_form = MissionStatusForm(request.POST, instance=mission)
@@ -1576,15 +1607,30 @@ def mission_detail(request, mission_id):
                 return redirect('mission_detail', mission_id=mission.id)
         else:
             status_form = MissionStatusForm(instance=mission)
+    if can_edit_owner:
+        if request.method == 'POST' and 'update_owner' in request.POST:
+            owner_form = MissionOwnerForm(request.POST, instance=mission)
+            if owner_form.is_valid():
+                owner_form.save()
+                messages.success(request, "Propriétaire de la mission mis à jour.")
+                return redirect('mission_detail', mission_id=mission.id)
+        else:
+            owner_form = MissionOwnerForm(instance=mission)
     # Sessions jouées pour cette mission
     sessions = annotate_session_player_counts(
         mission.game_sessions.all()
     ).order_by('-start_time')
     sessions_data = []
+    succes_count = 0
+    echec_count = 0
     for session in sessions:
         duration_min = None
         if session.start_time and session.end_time:
             duration_min = int((session.end_time - session.start_time).total_seconds() // 60)
+        if session.verdict == GameSession.VERDICT_SUCCES:
+            succes_count += 1
+        elif session.verdict == GameSession.VERDICT_ECHEC:
+            echec_count += 1
         sessions_data.append({
             'id': session.id,
             'name': session.name,
@@ -1595,13 +1641,21 @@ def mission_detail(request, mission_id):
             'players_count': session.players_count,
             'vivant_count': session.vivant_count,
         })
+    decisive = succes_count + echec_count
+    if decisive:
+        win_rate_display = f'{round(100 * succes_count / decisive)} % ({succes_count}/{decisive})'
+    else:
+        win_rate_display = '—'
     return render(request, 'gdc_storm/mission_detail.html', {
         'mission': mission,
         'success': success,
         'map_display': map_display,
         'can_edit_status': can_edit_status,
+        'can_edit_owner': can_edit_owner,
         'status_form': status_form,
+        'owner_form': owner_form,
         'sessions_data': sessions_data,
+        'win_rate_display': win_rate_display,
     })
 
 # Delete mission view
@@ -1786,6 +1840,7 @@ def create_mission_from_pbo(
     *,
     strict=True,
     owner_user=None,
+    status=None,
 ):
     errors = []
     warnings = []
@@ -1880,6 +1935,8 @@ def create_mission_from_pbo(
         loadScreen=loadscreen_file,
         briefing=briefing if briefing is not None else [],
     )
+    if status is not None:
+        mission.status = status
     # Mode récup : autorise temporairement les noms hors convention CPC
     try:
         mission.save(skip_name_check=not strict)

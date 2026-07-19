@@ -1,5 +1,8 @@
 from django import forms
+from django.contrib.auth.models import User
+
 from .models import Mission
+
 
 class MissionUploadForm(forms.ModelForm):
     class Meta:
@@ -14,6 +17,7 @@ class MissionUploadForm(forms.ModelForm):
             'type': 'Type',
         }
 
+
 class MissionStatusForm(forms.ModelForm):
     class Meta:
         model = Mission
@@ -21,3 +25,18 @@ class MissionStatusForm(forms.ModelForm):
         widgets = {
             'status': forms.Select(attrs={'class': 'form-control'})
         }
+
+
+class MissionOwnerForm(forms.ModelForm):
+    user = forms.ModelChoiceField(
+        queryset=User.objects.filter(is_active=True).order_by('username'),
+        required=False,
+        empty_label='— Aucun —',
+        label='Propriétaire',
+        widget=forms.Select(attrs={'class': 'form-control'}),
+    )
+
+    class Meta:
+        model = Mission
+        fields = ['user']
+
