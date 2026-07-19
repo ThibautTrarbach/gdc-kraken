@@ -26,7 +26,7 @@
                         {% else %}
                             <span style="color:#bbb;">▲</span>
                         {% endif %}
-                    </a><br><input type="text" id="filter-type" class="filter-input" style="width:90%;font-size:0.95em;display:none;margin-top:4px;" placeholder="Filtrer..." onkeyup="filterTable()">
+                    </a><br><input type="text" id="filter-type" class="filter-input" style="width:90%;font-size:0.95em;display:none;margin-top:4px;" placeholder="Filtrer..." oninput="scheduleFilterTable()">
                 </th>
                 <th style="white-space:nowrap;vertical-align:top;">
                     <a href="#" onclick="setSort('nom');return false;" style="text-decoration:none;color:inherit;">
@@ -36,7 +36,7 @@
                         {% else %}
                             <span style="color:#bbb;">▲</span>
                         {% endif %}
-                    </a><br><input type="text" id="filter-nom" class="filter-input" style="width:90%;font-size:0.95em;display:none;margin-top:4px;" placeholder="Filtrer..." onkeyup="filterTable()">
+                    </a><br><input type="text" id="filter-nom" class="filter-input" style="width:90%;font-size:0.95em;display:none;margin-top:4px;" placeholder="Filtrer..." oninput="scheduleFilterTable()">
                 </th>
                 <th style="white-space:nowrap;vertical-align:top;">
                     <a href="#" onclick="setSort('carte');return false;" style="text-decoration:none;color:inherit;">
@@ -46,7 +46,7 @@
                         {% else %}
                             <span style="color:#bbb;">▲</span>
                         {% endif %}
-                    </a><br><input type="text" id="filter-carte" class="filter-input" style="width:90%;font-size:0.95em;display:none;margin-top:4px;" placeholder="Filtrer..." onkeyup="filterTable()">
+                    </a><br><input type="text" id="filter-carte" class="filter-input" style="width:90%;font-size:0.95em;display:none;margin-top:4px;" placeholder="Filtrer..." oninput="scheduleFilterTable()">
                 </th>
                 <th style="white-space:nowrap;vertical-align:top;">
                     <a href="#" onclick="setSort('auteur');return false;" style="text-decoration:none;color:inherit;">
@@ -56,7 +56,7 @@
                         {% else %}
                             <span style="color:#bbb;">▲</span>
                         {% endif %}
-                    </a><br><input type="text" id="filter-auteur" class="filter-input" style="width:90%;font-size:0.95em;display:none;margin-top:4px;" placeholder="Filtrer..." onkeyup="filterTable()">
+                    </a><br><input type="text" id="filter-auteur" class="filter-input" style="width:90%;font-size:0.95em;display:none;margin-top:4px;" placeholder="Filtrer..." oninput="scheduleFilterTable()">
                 </th>
                 <th style="white-space:nowrap;vertical-align:top;">Version</th>
                 <th style="white-space:nowrap;vertical-align:top;">
@@ -77,7 +77,7 @@
                         {% else %}
                             <span style="color:#bbb;">▲</span>
                         {% endif %}
-                    </a><br><input type="text" id="filter-statut" class="filter-input" style="width:90%;font-size:0.95em;display:none;margin-top:4px;" placeholder="Filtrer..." onkeyup="filterTable()">
+                    </a><br><input type="text" id="filter-statut" class="filter-input" style="width:90%;font-size:0.95em;display:none;margin-top:4px;" placeholder="Filtrer..." oninput="scheduleFilterTable()">
                 </th>
                 <th style="white-space:nowrap;vertical-align:top;">
                     <a href="?sort=min&order={% if sort == 'min' and order == 'asc' %}desc{% else %}asc{% endif %}" style="text-decoration:none;color:inherit;">
@@ -87,7 +87,7 @@
                         {% else %}
                             <span style="color:#bbb;">▲</span>
                         {% endif %}
-                    </a>
+                    </a><br><input type="number" id="filter-joueurs" class="filter-input" style="width:90%;font-size:0.95em;display:none;margin-top:4px;" placeholder="Nb joueurs..." min="1" oninput="scheduleFilterTable()">
                 </th>
                 <th style="white-space:nowrap;vertical-align:top;">
                     <a href="?sort=max&order={% if sort == 'max' and order == 'asc' %}desc{% else %}asc{% endif %}" style="text-decoration:none;color:inherit;">
@@ -124,8 +124,15 @@
         <tbody id="missions-table-body">
                 {% for mission in missions %}
                         {% with map_display=map_displays|get_item:mission.id %}
-                        <tr class="{% if mission.status == 'JOUABLE' %}mission-row-jouable{% elif mission.status == 'NON_JOUABLE' %}mission-row-non-jouable{% elif mission.status == 'INCONNU' %}mission-row-inconnu{% elif mission.status == 'SUPPRIMEE' %}mission-row-supprimee{% endif %}" style="white-space:nowrap;overflow-x:auto;">
-                                <!-- DEBUG: mission.status = {{ mission.status }} -->
+                        <tr class="{% if mission.status == 'JOUABLE' %}mission-row-jouable{% elif mission.status == 'NON_JOUABLE' %}mission-row-non-jouable{% elif mission.status == 'INCONNU' %}mission-row-inconnu{% elif mission.status == 'SUPPRIMEE' %}mission-row-supprimee{% endif %}"
+                            style="white-space:nowrap;overflow-x:auto;"
+                            data-type="{{ mission.get_type_display|lower }}"
+                            data-nom="{{ mission.name|lower }}"
+                            data-carte="{{ map_display|lower }}"
+                            data-auteur="{% if mission_authors_display|get_item:mission.id %}{{ mission_authors_display|get_item:mission.id|lower }}{% endif %}"
+                            data-statut="{{ mission.get_status_display|lower }}"
+                            data-min="{% if mission.min_players %}{{ mission.min_players }}{% else %}0{% endif %}"
+                            data-max="{{ mission.max_players }}">
                                 <td>{{ mission.get_type_display }}</td>
                                 <td style="white-space:nowrap;overflow-x:auto;max-width:300px;">
                                         <a href="{% url 'mission_detail' mission.id %}" style="color:#1976d2;font-weight:600;text-decoration:underline;">{{ mission.name }}</a>
@@ -176,28 +183,41 @@
         // Update URL without reloading (for toggle only)
         window.history.replaceState({}, '', `${window.location.pathname}?${params}`);
     }
+    let filterTimer = null;
+    const missionRows = Array.from(document.querySelectorAll('#missions-table-body tr'));
+
     function filterTable() {
         const type = document.getElementById('filter-type').value.toLowerCase();
         const nom = document.getElementById('filter-nom').value.toLowerCase();
         const auteur = document.getElementById('filter-auteur').value.toLowerCase();
         const carte = document.getElementById('filter-carte').value.toLowerCase();
         const statut = document.getElementById('filter-statut').value.toLowerCase();
-        const rows = document.querySelectorAll('#missions-table-body tr');
-        rows.forEach(row => {
-            const tds = row.querySelectorAll('td');
-            const typeVal = tds[0].innerText.toLowerCase();
-            const nomVal = tds[1].innerText.toLowerCase();
-            const carteVal = tds[2].innerText.toLowerCase();
-            const auteurVal = tds[3].innerText.toLowerCase();
-            const statutVal = tds[6].innerText.toLowerCase();
+        const joueursRaw = document.getElementById('filter-joueurs').value;
+        const joueurs = joueursRaw === '' ? null : parseInt(joueursRaw, 10);
+
+        for (const row of missionRows) {
+            const d = row.dataset;
             let show = true;
-            if(type && !typeVal.includes(type)) show = false;
-            if(nom && !nomVal.includes(nom)) show = false;
-            if(auteur && !auteurVal.includes(auteur)) show = false;
-            if(carte && !carteVal.includes(carte)) show = false;
-            if(statut && !statutVal.includes(statut)) show = false;
-            row.style.display = show ? '' : 'none';
-        });
+            if (type && !d.type.includes(type)) show = false;
+            else if (nom && !d.nom.includes(nom)) show = false;
+            else if (auteur && !d.auteur.includes(auteur)) show = false;
+            else if (carte && !d.carte.includes(carte)) show = false;
+            else if (statut && !d.statut.includes(statut)) show = false;
+            else if (joueurs !== null && !Number.isNaN(joueurs)) {
+                const minVal = Number(d.min) || 0;
+                const maxVal = Number(d.max);
+                if (!(minVal <= joueurs && joueurs <= maxVal)) show = false;
+            }
+            const nextDisplay = show ? '' : 'none';
+            if (row.style.display !== nextDisplay) {
+                row.style.display = nextDisplay;
+            }
+        }
+    }
+
+    function scheduleFilterTable() {
+        clearTimeout(filterTimer);
+        filterTimer = setTimeout(filterTable, 120);
     }
     function setSort(col) {
         // Récupère les filtres actifs
@@ -206,7 +226,8 @@
             nom: document.getElementById('filter-nom').value,
             auteur: document.getElementById('filter-auteur').value,
             carte: document.getElementById('filter-carte').value,
-            statut: document.getElementById('filter-statut').value
+            statut: document.getElementById('filter-statut').value,
+            joueurs: document.getElementById('filter-joueurs').value
         };
         // Détermine l'ordre
         let currentSort = '{{ sort|escapejs }}';
@@ -232,7 +253,7 @@
         const params = new URLSearchParams(window.location.search);
         const filters = document.querySelectorAll('.filter-input');
         let anyFilter = false;
-        ['type','nom','auteur','carte','statut'].forEach(key => {
+        ['type','nom','auteur','carte','statut','joueurs'].forEach(key => {
             const val = params.get('filter_' + key);
             if (val) {
                 document.getElementById('filter-' + key).value = val;
