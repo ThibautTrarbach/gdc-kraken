@@ -21,7 +21,7 @@
             {% for player in players %}
                 <tr>
                     <td>
-                        {% if player.users.count == 0 or player.id in selected_ids %}
+                        {% if player.users_count == 0 or player.id in selected_ids %}
                             <input type="checkbox" name="players" value="{{ player.id }}" {% if player.id in selected_ids %}checked{% endif %}>
                         {% else %}
                             <input type="checkbox" disabled>
@@ -29,8 +29,8 @@
                     </td>
                     <td>{{ player.name }}</td>
                     <td>
-                        {% if player.users.count > 0 %}
-                            {{ player.users.first.username }}
+                        {% if player.users_count > 0 %}
+                            {% with linked=player.users.all|first %}{{ linked.username }}{% endwith %}
                         {% else %}-{% endif %}
                     </td>
                 </tr>

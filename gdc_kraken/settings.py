@@ -272,6 +272,11 @@ MISSIONS_PBO_STORAGE_PATH = str(Path(_env(
 # Fichiers médias (missions, loadScreen)
 MEDIA_ROOT = Path(os.environ.get("MEDIA_ROOT", BASE_DIR / "missions"))
 MEDIA_URL = os.environ.get("MEDIA_URL", "/media/")
+# Servir /media/ via Django (nécessaire en Docker sans nginx). Désactiver en PROD si reverse-proxy.
+if "SERVE_MEDIA" in os.environ or "SERVE_MEDIA" in config_data:
+    SERVE_MEDIA = _env_bool("SERVE_MEDIA")
+else:
+    SERVE_MEDIA = PLATFORM == "DOCKER" or DEBUG
 
 # For legacy cleaning purposes / gros formulaires
 DATA_UPLOAD_MAX_NUMBER_FIELDS = int(os.environ.get("DATA_UPLOAD_MAX_NUMBER_FIELDS", "100000"))

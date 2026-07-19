@@ -23,6 +23,10 @@ urlpatterns = [
     path('admin/', admin.site.urls),
     path('accounts/', include('allauth.urls')),
     path('', include('gdc_storm.urls')),
-    # Médias exposés sans nginx (DEBUG=False inclus).
-    path('media/<path:path>', serve, {'document_root': settings.MEDIA_ROOT}),
 ]
+
+# Médias : uniquement si DEBUG ou SERVE_MEDIA (Docker sans nginx).
+if settings.DEBUG or getattr(settings, 'SERVE_MEDIA', False):
+    urlpatterns += [
+        path('media/<path:path>', serve, {'document_root': settings.MEDIA_ROOT}),
+    ]

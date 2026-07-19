@@ -75,12 +75,26 @@ class Mission(models.Model):
             if not re.match(pattern, self.name):
                 raise ValueError("Le champ 'name' doit être au format complet : CPC-YY[XX]-NomMission")
         if self.pk is not None:
-            orig = Mission.objects.get(pk=self.pk)
-            if orig.status != self.status:
-                self.last_status_update = timezone.now()
+            update_fields = kwargs.get('update_fields')
+            if update_fields is None or 'status' in update_fields:
+                orig_status = (
+                    Mission.objects.filter(pk=self.pk)
+                    .values_list('status', flat=True)
+                    .first()
+                )
+                if orig_status is not None and orig_status != self.status:
+                    self.last_status_update = timezone.now()
         else:
             self.last_status_update = timezone.now()
         super().save(*args, **kwargs)
+
+    class Meta:
+        indexes = [
+            models.Index(fields=['map', 'name'], name='mission_map_name_idx'),
+            models.Index(fields=['map'], name='mission_map_idx'),
+            models.Index(fields=['pbo_missing'], name='mission_pbo_missing_idx'),
+        ]
+
 
 class MapName(models.Model):
     code_name = models.CharField(max_length=100, unique=True, verbose_name='Nom de la carte (code)')
@@ -98,6 +112,11 @@ class Player(models.Model):
 
     def __str__(self):
         return self.name
+
+    class Meta:
+        indexes = [
+            models.Index(fields=['name'], name='player_name_idx'),
+        ]
 
 class GameSession(models.Model):
     mission = models.ForeignKey('Mission', null=True, blank=True, on_delete=models.SET_NULL, related_name='game_sessions')
@@ -129,6 +148,13 @@ class GameSession(models.Model):
 
     def __str__(self):
         return f"Session {self.name or self.mission} ({self.start_time})"
+
+    class Meta:
+        indexes = [
+            models.Index(fields=['mission', 'start_time'], name='gs_mission_start_idx'),
+            models.Index(fields=['map', 'start_time'], name='gs_map_start_idx'),
+            models.Index(fields=['start_time'], name='gs_start_time_idx'),
+        ]
 
 class GameSessionPlayer(models.Model):
     STATUS_CHOICES = [

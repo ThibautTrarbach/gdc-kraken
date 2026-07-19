@@ -31,11 +31,12 @@ def find_missions_for_session(mission_name, map_name):
     if not name_no_version or not map_normalized:
         return [], name_no_version, version, map_normalized
     name_key = name_no_version.casefold()
-    matches = [
-        m
-        for m in Mission.objects.filter(map__iexact=map_normalized)
-        if (m.name or '').casefold() == name_key
-    ]
+    # Filtre SQL sur map + nom (iexact) ; casefold final pour alignement unicode
+    candidates = Mission.objects.filter(
+        map__iexact=map_normalized,
+        name__iexact=name_no_version,
+    )
+    matches = [m for m in candidates if (m.name or '').casefold() == name_key]
     return matches, name_no_version, version, map_normalized
 
 

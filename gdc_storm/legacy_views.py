@@ -46,16 +46,19 @@ def legacy_export(request):
         'mission_count': mission_count,
     })
 
+@staff_member_required
 def bulk_missions(request):
     # Page à compléter pour l'import massif de missions
     return render(request, 'gdc_storm/bulk_missions.html')
 
-@login_required
+@staff_member_required
 def bulk_upload_mission(request):
     if request.method != 'POST' or 'pbo_file' not in request.FILES:
         return JsonResponse({'success': False, 'error': 'Aucun fichier .pbo fourni.'}, status=400)
     pbo_file = request.FILES['pbo_file']
-    filename = pbo_file.name
+    filename = os.path.basename((pbo_file.name or '').replace('\\', '/'))
+    if not filename or filename in ('.', '..'):
+        return JsonResponse({'success': False, 'error': 'Nom de fichier invalide.'}, status=400)
     temp_dir = os.path.join(tempfile.gettempdir(), 'gdc_storm')
     os.makedirs(temp_dir, exist_ok=True)
     temp_file_name = f"{uuid.uuid4()}_{filename}"
@@ -148,7 +151,7 @@ def bulk_upload_mission(request):
     return JsonResponse({'success': True, 'message': f"Mission '{filename}' stockée en temporaire (LegacyMission).", 'legacy_mission_id': legacy_mission.id})
 
 @require_POST
-@login_required
+@staff_member_required
 def update_linked_user(request):
     import html
     mission_id = request.POST.get('mission_id')
@@ -174,7 +177,7 @@ def update_linked_user(request):
         return JsonResponse({'success': False, 'error': 'Paramètres manquants.'}, status=400)
 
 @require_POST
-@login_required
+@staff_member_required
 def create_user_from_linkeduser(request):
     linked_user = request.POST.get('linkedUser')
     if not linked_user:
@@ -195,7 +198,7 @@ def create_user_from_linkeduser(request):
     return JsonResponse({'success': True, 'message': f"Utilisateur '{linked_user}' créé avec succès." + (f" Player associé." if player else " Aucun Player associé."), 'password': password})
 
 @require_POST
-@login_required
+@staff_member_required
 def export_legacy_missions_to_main(request):
     linked_user = request.POST.get('linkedUser')
     if not linked_user:
@@ -242,7 +245,7 @@ def export_legacy_missions_to_main(request):
         msg += "<br>Erreurs :<ul>" + ''.join(f"<li>{err}</li>" for err in errors) + "</ul>"
     return JsonResponse({'success': count > 0, 'message': msg, 'errors': errors})
 
-@login_required
+@staff_member_required
 def get_legacy_import_errors(request):
     errors = LegacyImportError.objects.order_by('-created_at')
     return JsonResponse({
@@ -252,7 +255,7 @@ def get_legacy_import_errors(request):
     })
 
 @require_POST
-@login_required
+@staff_member_required
 def delete_legacy_import_error(request):
     error_id = request.POST.get('error_id')
     try:
@@ -521,7 +524,7 @@ def import_gamesession_player_role_csv(request):
 
 
 @require_POST
-@login_required
+@staff_member_required
 @csrf_exempt
 def import_legacy_gamesessions(request):
     from gdc_storm.models import LegacyGameSession, GameSession, Mission, LegacyGameSessionPlayerRole, LegacyPlayers, Player, LegacyRole, GameSessionPlayer, LegacyMapNames

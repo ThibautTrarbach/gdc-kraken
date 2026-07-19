@@ -140,11 +140,12 @@ import glob
 import shutil
 import tempfile
 import datetime
+import time
 from collections import defaultdict
 import secrets
 
 from django.core.cache import cache
-from django.db.models import Count, Max
+from django.db.models import Count, Max, Q
 from django.shortcuts import render, get_object_or_404, redirect
 from django.http import HttpResponse, JsonResponse
 from django.urls import reverse
@@ -164,6 +165,14 @@ RECUP_USERNAME = 'GDC-RECUP'
 RECUP_RELAX_FILENAME = False
 
 from yapbol import PBOFile
+
+
+def annotate_session_player_counts(queryset):
+    """Ajoute players_count et vivant_count en une seule passe SQL (anti N+1)."""
+    return queryset.annotate(
+        players_count=Count('players'),
+        vivant_count=Count('players', filter=Q(players__status='VIVANT')),
+    )
 
 
 def get_recup_user():
@@ -204,7 +213,7 @@ def user_is_mission_maker(user):
 
 def clean_temp_files(temp_dir, max_age_seconds=3600):
     """Supprime les fichiers temporaires plus vieux que max_age_seconds dans temp_dir."""
-    now = int(os.path.getmtime(temp_dir)) if os.path.exists(temp_dir) else 0
+    now = int(time.time())
     for temp_file in glob.glob(os.path.join(temp_dir, '*')):
         try:
             if os.path.isfile(temp_file):
@@ -235,9 +244,15 @@ def is_safe_upload_temp_path(temp_file_path):
 
 def save_uploaded_pbo_to_temp(uploaded_file):
     """Sauve un UploadedFile dans le répertoire temp et retourne (temp_file_path, temp_file_name, filename)."""
-    filename = uploaded_file.name
+    raw_name = uploaded_file.name or ''
+    filename = os.path.basename(raw_name.replace('\\', '/'))
+    if not filename or filename in ('.', '..'):
+        raise ValueError("Nom de fichier upload invalide.")
     temp_file_name = f"{uuid.uuid4()}_{filename}"
-    temp_file_path = os.path.join(get_upload_temp_dir(), temp_file_name)
+    temp_dir = get_upload_temp_dir()
+    temp_file_path = os.path.join(temp_dir, temp_file_name)
+    if os.path.dirname(os.path.realpath(temp_file_path)) != os.path.realpath(temp_dir):
+        raise ValueError("Chemin temporaire hors répertoire autorisé.")
     with open(temp_file_path, 'wb+') as destination:
         for chunk in uploaded_file.chunks():
             destination.write(chunk)
@@ -740,7 +755,19 @@ def upload_analyze(request):
                 'details': {},
             })
             continue
-        temp_file_path, temp_file_name, filename = save_uploaded_pbo_to_temp(uploaded)
+        try:
+            temp_file_path, temp_file_name, filename = save_uploaded_pbo_to_temp(uploaded)
+        except ValueError as e:
+            items.append({
+                'id': str(uuid.uuid4()),
+                'filename': getattr(uploaded, 'name', '') or '',
+                'temp_file_path': None,
+                'temp_file_name': None,
+                'action': 'error',
+                'error': str(e),
+                'details': {},
+            })
+            continue
         analysis = analyze_pbo_upload(filename, request.user)
         items.append({
             'id': str(uuid.uuid4()),
@@ -1074,7 +1101,19 @@ def recup_analyze(request):
                 'details': {},
             })
             continue
-        temp_file_path, temp_file_name, filename = save_uploaded_pbo_to_temp(uploaded)
+        try:
+            temp_file_path, temp_file_name, filename = save_uploaded_pbo_to_temp(uploaded)
+        except ValueError as e:
+            items.append({
+                'id': str(uuid.uuid4()),
+                'filename': getattr(uploaded, 'name', '') or '',
+                'temp_file_path': None,
+                'temp_file_name': None,
+                'action': 'error',
+                'error': str(e),
+                'details': {},
+            })
+            continue
         analysis = analyze_pbo_upload(filename, request.user, allow_pbo_restore=True)
         items.append({
             'id': str(uuid.uuid4()),
@@ -1263,13 +1302,32 @@ def recup_commit(request):
     })
 
 
+MAP_DISPLAY_CACHE_KEY = 'map_display_names_v1'
+
+
+def get_map_display_cache():
+    """Cache global code_name → display_name (1h)."""
+    map_display_cache = cache.get(MAP_DISPLAY_CACHE_KEY)
+    if map_display_cache is None:
+        all_maps = MapName.objects.all()
+        map_display_cache = {m.code_name: m.display_name or m.code_name for m in all_maps}
+        cache.set(MAP_DISPLAY_CACHE_KEY, map_display_cache, 3600)
+    return map_display_cache
+
+
 def get_map_display(map_code):
     """Retourne le display_name d'une carte à partir de son code_name, ou le code si non trouvé."""
-    try:
-        map_obj = MapName.objects.get(code_name=map_code)
-        return map_obj.display_name or map_code
-    except MapName.DoesNotExist:
+    if not map_code:
         return map_code
+    cache_map = get_map_display_cache()
+    if map_code in cache_map:
+        return cache_map[map_code]
+    # Fallback casse / code inconnu
+    lower = map_code.lower()
+    for code, display in cache_map.items():
+        if code.lower() == lower:
+            return display
+    return map_code
 
 
 def get_mission_mappings(missions):
@@ -1289,7 +1347,7 @@ def mission_list(request):
     sort_fields = {
         'nom': 'name',
         'proprietaire': 'user__username',
-        'min': 'max_players',
+        'min': 'min_players',
         'max': 'max_players',
         'type': 'type',
         'carte': 'map',
@@ -1301,7 +1359,7 @@ def mission_list(request):
     sort_field = sort_fields.get(sort, 'id')
 
     # Ajoute les infos "combien de fois jouée" + "dernière fois jouée"
-    missions_qs = Mission.objects.all().annotate(
+    missions_qs = Mission.objects.select_related('user').annotate(
         played_count=Count('game_sessions'),
         last_played_at=Max('game_sessions__start_time'),
     )
@@ -1359,14 +1417,14 @@ def mission_detail(request, mission_id):
         else:
             status_form = MissionStatusForm(instance=mission)
     # Sessions jouées pour cette mission
-    sessions = mission.game_sessions.all().order_by('-start_time')
+    sessions = annotate_session_player_counts(
+        mission.game_sessions.all()
+    ).order_by('-start_time')
     sessions_data = []
     for session in sessions:
         duration_min = None
         if session.start_time and session.end_time:
             duration_min = int((session.end_time - session.start_time).total_seconds() // 60)
-        players_count = session.players.count()
-        vivant_count = session.players.filter(status='VIVANT').count()
         sessions_data.append({
             'id': session.id,
             'name': session.name,
@@ -1374,8 +1432,8 @@ def mission_detail(request, mission_id):
             'duration_min': duration_min,
             'verdict': session.verdict,
             'verdict_display': session.get_verdict_display(),
-            'players_count': players_count,
-            'vivant_count': vivant_count,
+            'players_count': session.players_count,
+            'vivant_count': session.vivant_count,
         })
     return render(request, 'gdc_storm/mission_detail.html', {
         'mission': mission,
@@ -1412,6 +1470,15 @@ def delete_mission(request, mission_id):
                 default_storage.delete(img_path)
             except Exception:
                 pass
+    # Suppression du fichier .pbo en stockage
+    pbo_name = resolve_pbo_on_disk(mission_pbo_candidate_names(mission))
+    if pbo_name:
+        pbo_path = os.path.join(settings.MISSIONS_PBO_STORAGE_PATH, pbo_name)
+        try:
+            if os.path.isfile(pbo_path):
+                os.remove(pbo_path)
+        except Exception as e:
+            logging.warning("Échec suppression PBO %s : %s", pbo_path, e)
     mission.delete()
     messages.success(request, f"Mission supprimée avec succès : {mission_name}")
     return redirect('mission_list')
@@ -1456,7 +1523,9 @@ def user_profile(request, user_id):
     total_sessions_played = len(set(sessions_played))
     total_missions_published = len(missions)
     session_ids = list(set([s.id for s in sessions_played]))
-    sessions = GameSession.objects.filter(id__in=session_ids).select_related('mission')
+    sessions = annotate_session_player_counts(
+        GameSession.objects.filter(id__in=session_ids).select_related('mission')
+    )
     all_map_displays = {}
     for s in sessions:
         if s.mission:
@@ -1471,15 +1540,13 @@ def user_profile(request, user_id):
     filter_verdict = request.GET.get('filter_verdict', '').lower()
     sessions_data = []
     for s in sessions:
-        players_count = s.players.count()
-        vivant_count = s.players.filter(status='VIVANT').count()
         duration_min = None
         if s.start_time and s.end_time:
             duration_min = int((s.end_time - s.start_time).total_seconds() // 60)
         sessions_data.append({
             'session': s,
-            'players_count': players_count,
-            'vivant_count': vivant_count,
+            'players_count': s.players_count,
+            'vivant_count': s.vivant_count,
             'duration_min': duration_min,
         })
     # Filtres sessions
@@ -1488,7 +1555,10 @@ def user_profile(request, user_id):
     if filter_carte:
         sessions_data = [d for d in sessions_data if filter_carte in (get_map_display(d['session'].map) or '').lower()]
     if filter_verdict:
-        sessions_data = [d for d in sessions_data if filter_verdict in (d['session'].get_verdict_display or '').lower()]
+        sessions_data = [
+            d for d in sessions_data
+            if filter_verdict in (d['session'].get_verdict_display() or '').lower()
+        ]
     # Tri sessions
     reverse_order = (order == 'desc')
     if sort == 'nom':
@@ -1837,7 +1907,9 @@ def player_detail(request, player_id):
     sessions_played = [gsp.session for gsp in gamesession_players]
     total_sessions_played = len(set(sessions_played))
     session_ids = list(set([s.id for s in sessions_played]))
-    sessions = GameSession.objects.filter(id__in=session_ids).select_related('mission')
+    sessions = annotate_session_player_counts(
+        GameSession.objects.filter(id__in=session_ids).select_related('mission')
+    )
     # get_map_display est importé en début de fichier
     all_map_displays = {}
     for s in sessions:
@@ -1847,15 +1919,13 @@ def player_detail(request, player_id):
             all_map_displays[s.id] = get_map_display(s.map)
     sessions_data = []
     for s in sessions:
-        players_count = s.players.count()
-        vivant_count = s.players.filter(status='VIVANT').count()
         duration_min = None
         if s.start_time and s.end_time:
             duration_min = int((s.end_time - s.start_time).total_seconds() // 60)
         sessions_data.append({
             'session': s,
-            'players_count': players_count,
-            'vivant_count': vivant_count,
+            'players_count': s.players_count,
+            'vivant_count': s.vivant_count,
             'duration_min': duration_min,
         })
     # Tri côté Python
@@ -1898,11 +1968,19 @@ def player_detail(request, player_id):
 def player_mapping(request):
     from .models import Player
     user = request.user
-    players = Player.objects.all().order_by('name')
+    players = (
+        Player.objects.annotate(users_count=Count('users'))
+        .prefetch_related('users')
+        .order_by('name')
+    )
     if request.method == 'POST':
         selected_ids = request.POST.getlist('players')
         # Ne permettre de lier que les Players non liés ou déjà liés à l'utilisateur
-        allowed_ids = [str(p.id) for p in players if p.users.count() == 0 or user in p.users.all()]
+        allowed_ids = []
+        for p in players:
+            linked_ids = {u.id for u in p.users.all()}
+            if not linked_ids or user.id in linked_ids:
+                allowed_ids.append(str(p.id))
         filtered_ids = [int(pid) for pid in selected_ids if pid in allowed_ids]
         user.players.set(filtered_ids)
         user.save()
@@ -2000,17 +2078,30 @@ def session_detail(request, session_id):
             messages.info(request, "Aucun changement de statut détecté.")
     missions_candidates = []
     show_associate_btn = False
+    no_mission_found = False
+    # Droits d'édition verdict (mêmes règles UI / serveur)
     user_can_edit_verdict = False
+    if request.user.is_authenticated:
+        if request.user.is_superuser:
+            user_can_edit_verdict = True
+        elif session.verdict == session.VERDICT_INCONNU:
+            user_can_edit_verdict = True
     # Gestion du POST pour le verdict
     if request.method == 'POST' and 'set_verdict' in request.POST:
-        verdict = request.POST.get('verdict')
-        if verdict in dict(GameSession.VERDICT_CHOICES):
-            session.verdict = verdict
-            session.save()
-            messages.success(request, "Verdict mis à jour.")
-            # Afficher le message sur la même page sans redirection
+        if not user_can_edit_verdict:
+            messages.error(request, "Modification du verdict non autorisée.")
         else:
-            messages.error(request, "Valeur de verdict invalide.")
+            verdict = request.POST.get('verdict')
+            if verdict in dict(GameSession.VERDICT_CHOICES):
+                session.verdict = verdict
+                session.save()
+                messages.success(request, "Verdict mis à jour.")
+                # Recalcul après changement (ex. INCONNU -> SUCCES retire le droit non-admin)
+                user_can_edit_verdict = request.user.is_authenticated and (
+                    request.user.is_superuser or session.verdict == session.VERDICT_INCONNU
+                )
+            else:
+                messages.error(request, "Valeur de verdict invalide.")
     # Préparation des infos pour le template amélioré
     map_display = get_map_display(session.map)
     mission_name = session.name
@@ -2041,23 +2132,27 @@ def session_detail(request, session_id):
         no_mission_found = len(missions_candidates) == 0
         if request.method == 'POST' and 'mission_id' in request.POST:
             mission_id = request.POST.get('mission_id')
-            try:
-                mission = Mission.objects.get(id=mission_id)
-                session.mission = mission
-                if map_norm:
-                    session.map = map_norm
-                session.save()
-                messages.success(request, "Mission associée avec succès à la session.")
-                return redirect('session_detail', session_id=session.id)
-            except Mission.DoesNotExist:
-                messages.error(request, "Mission introuvable.")
-    # Correction : calculer user_can_edit_verdict pour tous les cas, et le passer au template
-    user_can_edit_verdict = False
-    if request.user.is_authenticated:
-        if request.user.is_superuser:
-            user_can_edit_verdict = True
-        elif session.verdict == session.VERDICT_INCONNU:
-            user_can_edit_verdict = True
+            candidate_ids = {m.id for m in missions_candidates}
+            if not show_associate_btn:
+                messages.error(request, "Association non autorisée.")
+            else:
+                try:
+                    mid = int(mission_id)
+                except (TypeError, ValueError):
+                    mid = None
+                if mid not in candidate_ids:
+                    messages.error(request, "Mission non candidate pour cette session.")
+                else:
+                    try:
+                        mission = Mission.objects.get(id=mid)
+                        session.mission = mission
+                        if map_norm:
+                            session.map = map_norm
+                        session.save()
+                        messages.success(request, "Mission associée avec succès à la session.")
+                        return redirect('session_detail', session_id=session.id)
+                    except Mission.DoesNotExist:
+                        messages.error(request, "Mission introuvable.")
     return render(request, 'gdc_storm/session_detail.html', {
         'session': session,
         'missions_candidates': missions_candidates,
@@ -2073,14 +2168,14 @@ def session_detail(request, session_id):
     })
 
 def orphan_sessions(request):
-    sessions = GameSession.objects.filter(mission__isnull=True).order_by('-start_time')
+    sessions = annotate_session_player_counts(
+        GameSession.objects.filter(mission__isnull=True)
+    ).order_by('-start_time')
     sessions_data = []
     for s in sessions:
         duration_min = None
         if s.start_time and s.end_time:
             duration_min = int((s.end_time - s.start_time).total_seconds() // 60)
-        players_count = s.players.count()
-        vivant_count = s.players.filter(status='VIVANT').count()
         sessions_data.append({
             'id': s.id,
             'name': s.name,
@@ -2089,8 +2184,8 @@ def orphan_sessions(request):
             'duration_min': duration_min,
             'verdict': s.verdict,
             'get_verdict_display': s.get_verdict_display(),
-            'players_count': players_count,
-            'vivant_count': vivant_count,
+            'players_count': s.players_count,
+            'vivant_count': s.vivant_count,
         })
     return render(request, 'gdc_storm/orphan_sessions.html', {'sessions': sessions_data})
 
@@ -2099,14 +2194,14 @@ def map_detail(request, map_id):
     # Missions dont le champ map == code_name de la carte
     missions = Mission.objects.filter(map=map_obj.code_name).order_by('-id')
     # Sessions dont le champ map == code_name de la carte
-    sessions = GameSession.objects.filter(map=map_obj.code_name).order_by('-start_time')
+    sessions = annotate_session_player_counts(
+        GameSession.objects.filter(map=map_obj.code_name)
+    ).order_by('-start_time')
     sessions_data = []
     for session in sessions:
         duration_min = None
         if session.start_time and session.end_time:
             duration_min = int((session.end_time - session.start_time).total_seconds() // 60)
-        players_count = session.players.count()
-        vivant_count = session.players.filter(status='VIVANT').count()
         sessions_data.append({
             'id': session.id,
             'name': session.name,
@@ -2114,8 +2209,8 @@ def map_detail(request, map_id):
             'duration_min': duration_min,
             'verdict': session.verdict,
             'verdict_display': session.get_verdict_display(),
-            'players_count': players_count,
-            'vivant_count': vivant_count,
+            'players_count': session.players_count,
+            'vivant_count': session.vivant_count,
         })
     # Statistiques
     missions_count = missions.count()
@@ -2132,17 +2227,21 @@ def map_detail(request, map_id):
 def map_list(request):
     sort = request.GET.get('sort', 'display_name')
     order = request.GET.get('order', 'asc')
-    maps = MapName.objects.all()
+    maps = list(MapName.objects.all())
+    mission_counts = dict(
+        Mission.objects.values('map').annotate(c=Count('id')).values_list('map', 'c')
+    )
+    session_counts = dict(
+        GameSession.objects.values('map').annotate(c=Count('id')).values_list('map', 'c')
+    )
     map_data = []
     for m in maps:
-        missions_count = Mission.objects.filter(map=m.code_name).count()
-        sessions_count = GameSession.objects.filter(map=m.code_name).count()
         map_data.append({
             'id': m.id,
             'display_name': m.display_name,
             'code_name': m.code_name,
-            'missions_count': missions_count,
-            'sessions_count': sessions_count,
+            'missions_count': mission_counts.get(m.code_name, 0),
+            'sessions_count': session_counts.get(m.code_name, 0),
         })
     # Tri dynamique
     reverse_order = (order == 'desc')

@@ -6,6 +6,8 @@ from .models import GameSession, GameSessionPlayer, Player
 from functools import wraps
 from .models import ApiToken
 from .utils import find_mission_for_session
+import json
+
 
 def require_api_token(view_func):
     @wraps(view_func)
@@ -20,21 +22,37 @@ def require_api_token(view_func):
         return view_func(request, *args, **kwargs)
     return _wrapped_view
 
+
+def _parse_json_body(request):
+    try:
+        return json.loads(request.body.decode()), None
+    except Exception:
+        return None, JsonResponse({'success': False, 'error': 'JSON invalide'}, status=400)
+
+
+def _parse_timestamp(value):
+    """Convertit un timestamp unix en datetime aware (UTC)."""
+    try:
+        return datetime.datetime.fromtimestamp(float(value), tz=datetime.timezone.utc)
+    except Exception:
+        return None
+
+
 @csrf_exempt
 @require_http_methods(["POST"])
 @require_api_token
 def api_create_gamesession(request):
-    import json
-    data = json.loads(request.body.decode())
+    data, err = _parse_json_body(request)
+    if err:
+        return err
     mission_name = data.get('mission_name')
     map_name = data.get('map')
     start_time = data.get('start_time')
     mission, mission_name_no_version, version, map_normalized = find_mission_for_session(
         mission_name, map_name
     )
-    try:
-        start_dt = datetime.datetime.fromtimestamp(float(start_time))
-    except Exception:
+    start_dt = _parse_timestamp(start_time)
+    if start_dt is None:
         return JsonResponse({'success': False, 'error': 'start_time invalide'}, status=400)
     session = GameSession.objects.create(
         mission=mission,
@@ -45,16 +63,17 @@ def api_create_gamesession(request):
     )
     return JsonResponse({'success': True, 'session_id': session.id, 'mission_found': bool(mission)})
 
+
 @csrf_exempt
 @require_http_methods(["POST"])
 @require_api_token
 def api_update_gamesession_end(request, session_id):
-    import json
-    data = json.loads(request.body.decode())
+    data, err = _parse_json_body(request)
+    if err:
+        return err
     end_time = data.get('end_time')
-    try:
-        end_dt = datetime.datetime.fromtimestamp(float(end_time))
-    except Exception:
+    end_dt = _parse_timestamp(end_time)
+    if end_dt is None:
         return JsonResponse({'success': False, 'error': 'end_time invalide'}, status=400)
     try:
         session = GameSession.objects.get(id=session_id)
@@ -64,12 +83,14 @@ def api_update_gamesession_end(request, session_id):
     except GameSession.DoesNotExist:
         return JsonResponse({'success': False, 'error': 'GameSession introuvable'}, status=404)
 
+
 @csrf_exempt
 @require_http_methods(["POST"])
 @require_api_token
 def api_add_gamesession_player(request, session_id):
-    import json
-    data = json.loads(request.body.decode())
+    data, err = _parse_json_body(request)
+    if err:
+        return err
     player_name = data.get('player_name')
     role = data.get('role')
     if not player_name or not role:
@@ -82,12 +103,14 @@ def api_add_gamesession_player(request, session_id):
     gsp = GameSessionPlayer.objects.create(session=session, player=player_obj, role=role)
     return JsonResponse({'success': True, 'player_id': gsp.id, 'player_db_id': player_obj.id})
 
+
 @csrf_exempt
 @require_http_methods(["POST"])
 @require_api_token
 def api_update_gamesession_player_status(request, session_id):
-    import json
-    data = json.loads(request.body.decode())
+    data, err = _parse_json_body(request)
+    if err:
+        return err
     player_name = data.get('player_name')
     status = data.get('status')
     if not player_name or not status:
@@ -106,12 +129,14 @@ def api_update_gamesession_player_status(request, session_id):
     except GameSessionPlayer.DoesNotExist:
         return JsonResponse({'success': False, 'error': 'GameSessionPlayer introuvable'}, status=404)
 
+
 @csrf_exempt
 @require_http_methods(["POST"])
 @require_api_token
 def api_create_player(request):
-    import json
-    data = json.loads(request.body.decode())
+    data, err = _parse_json_body(request)
+    if err:
+        return err
     name = data.get('name', '').strip()
     if not name:
         return JsonResponse({'success': False, 'error': 'Nom requis.'}, status=400)
