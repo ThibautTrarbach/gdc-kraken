@@ -156,12 +156,15 @@ from django.contrib.auth.decorators import login_required, user_passes_test
 from django.contrib import messages
 from django.contrib.auth.models import Group, User
 from django.conf import settings
+from django.utils import timezone
 from django.utils.dateparse import parse_datetime
 from functools import wraps
 
 UPLOAD_ANALYZE_MAX_FILES = 100
 RECUP_ANALYZE_MAX_FILES = 1500
 RECUP_USERNAME = 'GDC-RECUP'
+# Date de publication forcée pour les missions créées via /recup/
+RECUP_PUBLICATION_DATE = datetime.datetime(2025, 10, 29, 0, 0, 0)
 # Temporaire : désactive la validation stricte des noms de fichiers en /recup/
 RECUP_RELAX_FILENAME = False
 
@@ -1396,6 +1399,7 @@ def recup_commit(request):
                     strict=False,
                     owner_user=recup_user,
                     status=Mission.STATUS_INCONNU,
+                    publication_date=RECUP_PUBLICATION_DATE,
                 )
             elif current_action == 'update':
                 existing_id = details.get('existing_mission_id')
@@ -1841,6 +1845,7 @@ def create_mission_from_pbo(
     strict=True,
     owner_user=None,
     status=None,
+    publication_date=None,
 ):
     errors = []
     warnings = []
@@ -1945,6 +1950,13 @@ def create_mission_from_pbo(
             "Une mission avec le même nom, carte et nombre de joueurs existe déjà "
             "(création concurrente ou doublon)."
         )
+    # auto_now_add ignore toute valeur à la création : forcer via update()
+    if publication_date is not None:
+        pub = publication_date
+        if timezone.is_naive(pub):
+            pub = timezone.make_aware(pub, timezone.get_current_timezone())
+        Mission.objects.filter(pk=mission.pk).update(publication_date=pub)
+        mission.publication_date = pub
     # Stocke la liste des images de briefing pour suppression ultérieure
     if briefing_images:
         mission.briefing_images = briefing_images

@@ -10,6 +10,7 @@ from django.urls import reverse
 from gdc_storm.models import Mission, MapName
 from gdc_storm.views import (
     RECUP_ANALYZE_MAX_FILES,
+    RECUP_PUBLICATION_DATE,
     RECUP_USERNAME,
     UPLOAD_ANALYZE_MAX_FILES,
     analyze_pbo_upload,
@@ -223,9 +224,11 @@ class SoftCreateUpdateTest(TestCase):
             strict=False,
             owner_user=self.recup,
             status=Mission.STATUS_INCONNU,
+            publication_date=RECUP_PUBLICATION_DATE,
         )
         self.assertIsNotNone(mission)
         self.assertEqual(mission.status, Mission.STATUS_INCONNU)
+        self.assertEqual(mission.publication_date.date(), RECUP_PUBLICATION_DATE.date())
         self.assertIsNone(msg)
 
     @patch('gdc_storm.views.save_pbo_to_storage')
@@ -740,6 +743,7 @@ class RecupEndpointsTest(TestCase):
         self.assertEqual(kwargs['strict'], False)
         self.assertEqual(kwargs['owner_user'].username, RECUP_USERNAME)
         self.assertEqual(kwargs['status'], Mission.STATUS_INCONNU)
+        self.assertEqual(kwargs['publication_date'], RECUP_PUBLICATION_DATE)
 
     @patch('gdc_storm.views.update_mission_from_pbo')
     def test_commit_update_preserve_owner_flag(self, mock_update):
