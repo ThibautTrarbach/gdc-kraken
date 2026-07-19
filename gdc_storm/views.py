@@ -145,7 +145,7 @@ from collections import defaultdict
 import secrets
 
 from django.core.cache import cache
-from django.db import IntegrityError
+from django.db import IntegrityError, transaction
 from django.db.models import Count, Max, Q, F
 from django.db.models.functions import TruncMonth, ExtractWeekDay, ExtractHour
 from django.shortcuts import render, get_object_or_404, redirect
@@ -3067,4 +3067,163 @@ def role_categories(request):
         'filter_uncategorized': filter_uncategorized,
         'sort': sort,
         'existing_categories': existing_categories,
+    })
+
+
+def _merge_players_into(keep: Player, sources):
+    """Réaffecte sessions et liens User des joueurs sources vers keep, puis les supprime."""
+    Through = Player.users.through
+    moved_sessions = 0
+    dropped_conflicts = 0
+    for source in sources:
+        if source.id == keep.id:
+            continue
+        for gsp in GameSessionPlayer.objects.filter(player_id=source.id).iterator():
+            conflict = GameSessionPlayer.objects.filter(
+                session_id=gsp.session_id, player_id=keep.id
+            ).exists()
+            if conflict:
+                gsp.delete()
+                dropped_conflicts += 1
+            else:
+                gsp.player_id = keep.id
+                gsp.save(update_fields=['player_id'])
+                moved_sessions += 1
+        for link in Through.objects.filter(player_id=source.id):
+            Through.objects.get_or_create(player_id=keep.id, user_id=link.user_id)
+            link.delete()
+        source.delete()
+    return moved_sessions, dropped_conflicts
+
+
+@login_required
+def player_admin(request):
+    """Interface admin : fusion de joueurs et liaison à des utilisateurs."""
+    forbidden = _require_superuser(request)
+    if forbidden:
+        return forbidden
+
+    PAGE_SIZE = 100
+
+    def _invalidate_player_caches():
+        cache.delete(STATS_CACHE_KEY)
+        cache.delete(SESSION_LIST_CACHE_KEY)
+
+    if request.method == 'POST':
+        action = request.POST.get('action', '')
+        next_url = request.POST.get('next') or reverse('player_admin')
+
+        if action == 'merge':
+            ids = request.POST.getlist('player_ids')
+            target_id = request.POST.get('target_player_id')
+            new_name = (request.POST.get('new_name') or '').strip()
+            if len(ids) < 2:
+                messages.error(request, "Sélectionne au moins deux joueurs à fusionner.")
+            elif not target_id:
+                messages.error(request, "Indique le joueur cible (conservé).")
+            elif target_id not in ids:
+                messages.error(request, "Le joueur cible doit faire partie de la sélection.")
+            else:
+                try:
+                    with transaction.atomic():
+                        keep = Player.objects.select_for_update().get(id=target_id)
+                        sources = list(
+                            Player.objects.select_for_update().filter(id__in=ids).exclude(id=keep.id)
+                        )
+                        if new_name and new_name != keep.name:
+                            if Player.objects.filter(name=new_name).exclude(id=keep.id).exists():
+                                raise IntegrityError(f"Le nom « {new_name} » est déjà pris.")
+                            keep.name = new_name
+                            keep.save(update_fields=['name'])
+                        moved, dropped = _merge_players_into(keep, sources)
+                    _invalidate_player_caches()
+                    msg = (
+                        f"Fusion vers « {keep.name} » : {len(sources)} joueur(s) fusionné(s), "
+                        f"{moved} participation(s) déplacée(s)."
+                    )
+                    if dropped:
+                        msg += f" {dropped} doublon(s) de session ignoré(s)."
+                    messages.success(request, msg)
+                except Player.DoesNotExist:
+                    messages.error(request, "Joueur introuvable.")
+                except IntegrityError as exc:
+                    messages.error(request, str(exc))
+            return redirect(next_url if request.GET else 'player_admin')
+
+        if action == 'link_user':
+            ids = request.POST.getlist('player_ids')
+            user_id = request.POST.get('user_id')
+            if not ids:
+                messages.error(request, "Sélectionne au moins un joueur.")
+            elif not user_id:
+                messages.error(request, "Choisis un utilisateur à lier.")
+            else:
+                user_obj = User.objects.filter(id=user_id).first()
+                if not user_obj:
+                    messages.error(request, "Utilisateur introuvable.")
+                else:
+                    players = list(Player.objects.filter(id__in=ids))
+                    for p in players:
+                        p.users.add(user_obj)
+                    _invalidate_player_caches()
+                    messages.success(
+                        request,
+                        f"{len(players)} joueur(s) lié(s) à « {user_obj.username} ».",
+                    )
+            return redirect(next_url if request.GET else 'player_admin')
+
+        if action == 'unlink_user':
+            player_id = request.POST.get('player_id')
+            user_id = request.POST.get('user_id')
+            player = get_object_or_404(Player, id=player_id)
+            user_obj = get_object_or_404(User, id=user_id)
+            player.users.remove(user_obj)
+            _invalidate_player_caches()
+            messages.success(
+                request,
+                f"« {player.name} » délié de « {user_obj.username} ».",
+            )
+            return redirect(next_url)
+
+    q = (request.GET.get('q') or '').strip()
+    filter_unlinked = request.GET.get('unlinked') == '1'
+    sort = request.GET.get('sort', 'name')
+    page_number = request.GET.get('page', '1')
+
+    qs = Player.objects.annotate(
+        users_count=Count('users', distinct=True),
+        sessions_count=Count('game_sessions', distinct=True),
+    ).prefetch_related('users')
+
+    if q:
+        qs = qs.filter(
+            Q(name__icontains=q) | Q(users__username__icontains=q)
+        ).distinct()
+    if filter_unlinked:
+        qs = qs.filter(users_count=0)
+
+    if sort == 'sessions':
+        qs = qs.order_by('-sessions_count', 'name')
+    elif sort == 'users':
+        qs = qs.order_by('-users_count', 'name')
+    else:
+        qs = qs.order_by('name')
+
+    players_count = qs.count()
+    linked_count = qs.filter(users_count__gt=0).count()
+
+    paginator = Paginator(qs, PAGE_SIZE)
+    page_obj = paginator.get_page(page_number)
+
+    all_users = User.objects.order_by('username').only('id', 'username')
+
+    return render(request, 'gdc_storm/player_admin.html', {
+        'players': page_obj,
+        'page_obj': page_obj,
+        'players_count': players_count,
+        'linked_count': linked_count,
+        'q': q,
+        'filter_unlinked': filter_unlinked,
+        'sort': sort,
+        'all_users': all_users,
     })

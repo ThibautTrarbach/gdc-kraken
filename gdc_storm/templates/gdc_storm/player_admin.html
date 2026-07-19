@@ -1,0 +1,338 @@
+{% extends 'gdc_storm/base.html' %}
+{% block title %}Admin joueurs - GDC Storm{% endblock %}
+{% block extra_head %}
+<style>
+.players-admin-page { max-width: 1100px; margin: 35px auto 0; padding: 0 32px 48px; }
+.players-admin-card {
+    background: #fff;
+    border-radius: 18px;
+    box-shadow: 0 2px 16px #0002;
+    padding: 22px 24px 28px;
+}
+.players-admin-title { font-size: 2em; font-weight: 700; margin: 0 0 6px; }
+.players-admin-sub { color: #666; margin-bottom: 18px; }
+.players-admin-toolbar {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 10px;
+    align-items: center;
+    margin-bottom: 16px;
+}
+.players-admin-toolbar input[type="text"],
+.players-admin-toolbar select,
+.players-admin-panel input[type="text"],
+.players-admin-panel select {
+    padding: 7px 10px;
+    border: 1px solid #ccc;
+    border-radius: 8px;
+    font-size: 0.95em;
+}
+.players-admin-toolbar .home-btn,
+.players-admin-panel .home-btn,
+.players-admin-actions .home-btn {
+    padding: 7px 14px;
+    font-size: 0.92em;
+    border: none;
+    border-radius: 8px;
+    cursor: pointer;
+    font-weight: 600;
+}
+.btn-yellow { background: #FFD600; color: #111; }
+.btn-blue { background: #1976d2; color: #fff; }
+.btn-gray { background: #eee; color: #333; text-decoration: none; display: inline-block; }
+.btn-red { background: #c62828; color: #fff; }
+.btn-yellow:hover, .btn-blue:hover, .btn-gray:hover, .btn-red:hover { filter: brightness(0.95); }
+.players-admin-panel {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 10px;
+    align-items: center;
+    border-radius: 12px;
+    padding: 12px 14px;
+    margin-bottom: 12px;
+}
+.players-admin-panel.merge {
+    background: #fffbe6;
+    border: 1px solid #FFD600;
+}
+.players-admin-panel.link {
+    background: #e3f2fd;
+    border: 1px solid #1976d2;
+}
+.players-admin-panel label { font-weight: 600; }
+.players-admin-panel .selected-count { color: #1976d2; font-weight: 700; }
+.players-admin-table { width: 100%; border-collapse: collapse; font-size: 0.95em; }
+.players-admin-table th {
+    text-align: left;
+    padding: 8px 10px;
+    background: #111;
+    color: #FFD600;
+}
+.players-admin-table td {
+    padding: 8px 10px;
+    border-bottom: 1px solid #eee;
+    vertical-align: middle;
+}
+.players-admin-table tr:nth-child(even) { background: #fffbe6; }
+.players-admin-table tr.linked { background: #e8f5e9; }
+.players-admin-table tr.linked:nth-child(even) { background: #dcedc8; }
+.players-admin-badge {
+    display: inline-block;
+    font-size: 0.75em;
+    padding: 2px 8px;
+    border-radius: 10px;
+    background: #43a047;
+    color: #fff;
+    font-weight: 600;
+    margin-left: 4px;
+}
+.players-admin-user-chip {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    background: #eee;
+    border-radius: 8px;
+    padding: 2px 6px 2px 8px;
+    margin: 2px 4px 2px 0;
+    font-size: 0.88em;
+}
+.players-admin-user-chip form { display: inline; margin: 0; }
+.players-admin-user-chip button {
+    border: none;
+    background: transparent;
+    color: #c62828;
+    cursor: pointer;
+    font-weight: 700;
+    padding: 0 2px;
+    line-height: 1;
+}
+.players-admin-empty { color: #888; font-style: italic; padding: 16px 0; }
+.players-admin-stats { color: #555; margin-bottom: 12px; font-size: 0.95em; }
+.players-admin-pager {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+    align-items: center;
+    justify-content: center;
+    margin-top: 18px;
+}
+.players-admin-pager a, .players-admin-pager span {
+    padding: 6px 12px;
+    border-radius: 8px;
+    text-decoration: none;
+    font-weight: 600;
+}
+.players-admin-pager a { background: #eee; color: #1976d2; }
+.players-admin-pager .current { background: #1976d2; color: #fff; }
+.players-admin-target-btn {
+    padding: 4px 10px !important;
+    font-size: 0.85em !important;
+}
+</style>
+{% endblock %}
+{% block content %}
+<div class="players-admin-page">
+    <div class="players-admin-card">
+        <div class="players-admin-title">Admin joueurs</div>
+        <div class="players-admin-sub">
+            Fusionne des pseudos en double (sessions et liens utilisateur consolidés) ou relie des joueurs à un compte.
+        </div>
+
+        {% if messages %}
+        <div class="message-block" style="margin-bottom:14px;">
+            {% for message in messages %}
+                <div class="message-{{ message.tags|default:'info' }}">{{ message }}</div>
+            {% endfor %}
+        </div>
+        {% endif %}
+
+        <div class="players-admin-stats">
+            {{ players_count }} joueur(s) — {{ linked_count }} lié(s) à un utilisateur
+            {% if page_obj.paginator.num_pages > 1 %}
+            — page {{ page_obj.number }}/{{ page_obj.paginator.num_pages }}
+            {% endif %}
+        </div>
+
+        <form method="get" class="players-admin-toolbar">
+            <input type="text" name="q" value="{{ q }}" placeholder="Filtrer par pseudo ou utilisateur…" style="flex:1;min-width:180px;">
+            <select name="sort">
+                <option value="name" {% if sort == 'name' %}selected{% endif %}>Tri : nom</option>
+                <option value="sessions" {% if sort == 'sessions' %}selected{% endif %}>Tri : sessions</option>
+                <option value="users" {% if sort == 'users' %}selected{% endif %}>Tri : liens</option>
+            </select>
+            <label style="display:flex;align-items:center;gap:6px;cursor:pointer;">
+                <input type="checkbox" name="unlinked" value="1" {% if filter_unlinked %}checked{% endif %} onchange="this.form.submit()">
+                Non liés seulement
+            </label>
+            <button type="submit" class="home-btn btn-blue">Filtrer</button>
+            {% if q or filter_unlinked or sort != 'name' %}
+            <a href="{% url 'player_admin' %}" class="home-btn btn-gray">Reset filtre</a>
+            {% endif %}
+        </form>
+
+        <form method="post" id="merge-form" class="players-admin-panel merge" action="{% url 'player_admin' %}?{{ request.GET.urlencode }}">
+            {% csrf_token %}
+            <input type="hidden" name="action" value="merge">
+            <input type="hidden" name="next" value="{{ request.get_full_path }}">
+            <label>Fusionner vers le joueur n°</label>
+            <input type="text" name="target_player_id" id="target_player_id" placeholder="ID cible" required style="width:90px;">
+            <input type="text" name="new_name" id="new_name" placeholder="Nouveau nom (optionnel)" style="min-width:160px;">
+            <button type="submit" class="home-btn btn-yellow" onclick="return confirmMerge()">Fusionner</button>
+            <span><span class="selected-count" id="selected-count-merge">0</span> sélectionné(s)</span>
+        </form>
+
+        <form method="post" id="link-form" class="players-admin-panel link" action="{% url 'player_admin' %}?{{ request.GET.urlencode }}">
+            {% csrf_token %}
+            <input type="hidden" name="action" value="link_user">
+            <input type="hidden" name="next" value="{{ request.get_full_path }}">
+            <label>Lier la sélection à :</label>
+            <select name="user_id" required style="min-width:180px;">
+                <option value="">— Utilisateur —</option>
+                {% for u in all_users %}
+                <option value="{{ u.id }}">{{ u.username }}</option>
+                {% endfor %}
+            </select>
+            <button type="submit" class="home-btn btn-blue" onclick="return confirmLink()">Lier</button>
+            <span><span class="selected-count" id="selected-count-link">0</span> sélectionné(s)</span>
+        </form>
+
+        {% if players %}
+        <table class="players-admin-table">
+            <thead>
+                <tr>
+                    <th style="width:36px;"><input type="checkbox" id="check-all" title="Tout sélectionner (page)"></th>
+                    <th style="width:70px;">ID</th>
+                    <th>Pseudo</th>
+                    <th style="width:90px;">Sessions</th>
+                    <th>Utilisateurs liés</th>
+                    <th style="width:90px;">Cible</th>
+                </tr>
+            </thead>
+            <tbody>
+            {% for p in players %}
+                <tr class="{% if p.users_count %}linked{% endif %}" data-player-id="{{ p.id }}" data-player-name="{{ p.name }}">
+                    <td>
+                        <input type="checkbox" name="player_ids" value="{{ p.id }}" class="player-check"
+                               form="merge-form" data-also-form="link-form">
+                    </td>
+                    <td>{{ p.id }}</td>
+                    <td>
+                        <a href="{% url 'player_detail' p.id %}"><strong>{{ p.name }}</strong></a>
+                        {% if p.users_count %}<span class="players-admin-badge">lié</span>{% endif %}
+                    </td>
+                    <td>{{ p.sessions_count }}</td>
+                    <td>
+                        {% if p.users.all %}
+                            {% for u in p.users.all %}
+                            <span class="players-admin-user-chip">
+                                <a href="{% url 'user_profile' u.id %}">{{ u.username }}</a>
+                                <form method="post" action="{% url 'player_admin' %}">
+                                    {% csrf_token %}
+                                    <input type="hidden" name="action" value="unlink_user">
+                                    <input type="hidden" name="player_id" value="{{ p.id }}">
+                                    <input type="hidden" name="user_id" value="{{ u.id }}">
+                                    <input type="hidden" name="next" value="{{ request.get_full_path }}">
+                                    <button type="submit" title="Délier" onclick="return confirm('Délier {{ p.name }} de {{ u.username }} ?')">×</button>
+                                </form>
+                            </span>
+                            {% endfor %}
+                        {% else %}
+                            <span style="color:#aaa;">—</span>
+                        {% endif %}
+                    </td>
+                    <td>
+                        <button type="button" class="home-btn btn-blue players-admin-target-btn"
+                                onclick="setMergeTarget('{{ p.id }}', '{{ p.name|escapejs }}')">Cible</button>
+                    </td>
+                </tr>
+            {% endfor %}
+            </tbody>
+        </table>
+
+        {% if page_obj.paginator.num_pages > 1 %}
+        <div class="players-admin-pager">
+            {% if page_obj.has_previous %}
+            <a href="?q={{ q|urlencode }}&sort={{ sort }}{% if filter_unlinked %}&unlinked=1{% endif %}&page={{ page_obj.previous_page_number }}">← Préc.</a>
+            {% endif %}
+            {% for num in page_obj.paginator.page_range %}
+                {% if num == page_obj.number %}
+                <span class="current">{{ num }}</span>
+                {% elif num == 1 or num == page_obj.paginator.num_pages or num >= page_obj.number|add:'-2' and num <= page_obj.number|add:'2' %}
+                <a href="?q={{ q|urlencode }}&sort={{ sort }}{% if filter_unlinked %}&unlinked=1{% endif %}&page={{ num }}">{{ num }}</a>
+                {% endif %}
+            {% endfor %}
+            {% if page_obj.has_next %}
+            <a href="?q={{ q|urlencode }}&sort={{ sort }}{% if filter_unlinked %}&unlinked=1{% endif %}&page={{ page_obj.next_page_number }}">Suiv. →</a>
+            {% endif %}
+        </div>
+        {% endif %}
+
+        {% else %}
+        <div class="players-admin-empty">Aucun joueur trouvé.</div>
+        {% endif %}
+    </div>
+</div>
+<script>
+(function() {
+    var checks = document.querySelectorAll('.player-check');
+    var countMerge = document.getElementById('selected-count-merge');
+    var countLink = document.getElementById('selected-count-link');
+    var all = document.getElementById('check-all');
+    var linkForm = document.getElementById('link-form');
+
+    function syncLinkForm() {
+        if (!linkForm) return;
+        linkForm.querySelectorAll('input[name="player_ids"]').forEach(function(el) { el.remove(); });
+        checks.forEach(function(c) {
+            if (!c.checked) return;
+            var hidden = document.createElement('input');
+            hidden.type = 'hidden';
+            hidden.name = 'player_ids';
+            hidden.value = c.value;
+            linkForm.appendChild(hidden);
+        });
+    }
+
+    function refresh() {
+        var n = 0;
+        checks.forEach(function(c) { if (c.checked) n++; });
+        if (countMerge) countMerge.textContent = n;
+        if (countLink) countLink.textContent = n;
+        syncLinkForm();
+    }
+
+    checks.forEach(function(c) { c.addEventListener('change', refresh); });
+    if (all) {
+        all.addEventListener('change', function() {
+            checks.forEach(function(c) { c.checked = all.checked; });
+            refresh();
+        });
+    }
+    refresh();
+})();
+
+function setMergeTarget(id, name) {
+    var el = document.getElementById('target_player_id');
+    if (el) { el.value = id; el.focus(); }
+    var check = document.querySelector('.player-check[value="' + id + '"]');
+    if (check && !check.checked) {
+        check.checked = true;
+        check.dispatchEvent(new Event('change'));
+    }
+}
+
+function confirmMerge() {
+    var n = document.querySelectorAll('.player-check:checked').length;
+    var target = (document.getElementById('target_player_id') || {}).value || '';
+    if (n < 2) { alert('Sélectionne au moins deux joueurs.'); return false; }
+    if (!target.trim()) { alert('Indique l’ID du joueur cible.'); return false; }
+    return confirm('Fusionner ' + n + ' joueur(s) vers l’ID ' + target.trim() + ' ? Les autres seront supprimés.');
+}
+
+function confirmLink() {
+    var n = document.querySelectorAll('.player-check:checked').length;
+    if (!n) { alert('Sélectionne au moins un joueur.'); return false; }
+    return confirm('Lier ' + n + ' joueur(s) à l’utilisateur choisi ?');
+}
+</script>
+{% endblock %}

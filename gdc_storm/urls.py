@@ -34,6 +34,7 @@ urlpatterns = [
     path('logout-post/', auth_views.LogoutView.as_view(), name='logout_post'),  # POST seulement
     path('users/<int:user_id>/', views.user_profile, name='user_profile'),
     path('players/', views.player_list, name='player_list'),
+    path('players/admin/', views.player_admin, name='player_admin'),
     path('players/<int:player_id>/', views.player_detail, name='player_detail'),
     path('stats/', views.stats, name='stats'),
     path('roles/', views.role_categories, name='role_categories'),
