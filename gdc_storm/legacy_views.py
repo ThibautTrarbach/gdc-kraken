@@ -211,8 +211,15 @@ def export_legacy_missions_to_main(request):
     for legacy in missions:
         try:
             with transaction.atomic():
-                if Mission.objects.filter(name=legacy.name, map=legacy.map).exists():
-                    errors.append(f"Mission déjà existante : {legacy.name} ({legacy.map})")
+                if Mission.objects.filter(
+                    name=legacy.name,
+                    map=legacy.map,
+                    max_players=legacy.max_players,
+                ).exists():
+                    errors.append(
+                        f"Mission déjà existante : {legacy.name} ({legacy.map}, "
+                        f"{legacy.max_players} joueurs)"
+                    )
                     continue
                 MapName.objects.get_or_create(
                     code_name=legacy.map, defaults={'display_name': ''}
