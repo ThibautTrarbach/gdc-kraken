@@ -62,10 +62,34 @@ def find_mission_for_session(mission_name, map_name):
 
 
 def parse_mission_filename(filename):
-    import re
+    """
+    Parse strict d'un nom de fichier PBO.
+    Format : CPC-TYPE[XX]-Nom_De_La_Mission-VY.nom_de_map.pbo
+    """
     allowed_types = '|'.join([choice[0] for choice in Mission.TYPE_CHOICES])
-    # Autorise lettres, chiffres, ponctuation, accents, caractères spéciaux clavier qwerty/azerty
-    pattern = rf"^(CPC-({allowed_types})\[(\d{{2,3}})\]-[\w\d\s\-\_\(\)@#%&'éèàùâêîôûäëïöüçÉÈÀÙÂÊÎÔÛÄËÏÖÜÇ]+)-([Vv]\d+)\.(.+)\.pbo$"
+    name_chars = r"[\w\d\s\-\_\(\)@#%&'éèàùâêîôûäëïöüçÉÈÀÙÂÊÎÔÛÄËÏÖÜÇ]+"
+    pattern = (
+        rf"^(CPC-({allowed_types})\[(\d{{2,3}})\]-{name_chars})"
+        rf"-([Vv]\d+)\.(.+)\.pbo$"
+    )
+    match = re.match(pattern, filename)
+    if not match:
+        return None
+    return match.groups()
+
+
+def parse_mission_filename_lenient(filename):
+    """
+    Parse assoupli (récup) : accepte _V / -_V et des tags après la version (-HC, -(HC)).
+    Conserve la structure CPC-TYPE[XX]-Nom…version.map.pbo.
+    """
+    allowed_types = '|'.join([choice[0] for choice in Mission.TYPE_CHOICES])
+    name_char = r"[\w\d\s\-\_\(\)@#%&'éèàùâêîôûäëïöüçÉÈÀÙÂÊÎÔÛÄËÏÖÜÇ]"
+    optional_tags = r"(?:-(?:\([A-Za-z0-9]+\)|[A-Za-z0-9]+))*"
+    pattern = (
+        rf"^(CPC-({allowed_types})\[(\d{{2,3}})\]-{name_char}+?)"
+        rf"[-_]+([Vv]\d+){optional_tags}\.(.+)\.pbo$"
+    )
     match = re.match(pattern, filename)
     if not match:
         return None
@@ -76,23 +100,26 @@ def parse_mission_filename(filename):
 def legacy_parse_mission_filename(filename):
     # Expected output:
     # mission_name, mission_type, max_players, version, map_name
-    import re
     allowed_types = '|'.join([choice[0] for choice in Mission.TYPE_CHOICES])
-    # Autorise lettres, chiffres, ponctuation, accents, caractères spéciaux clavier qwerty/azerty
-    #pattern = rf"^(CPC-({allowed_types})\[(\d{{2,3}})\]-?[\w\d\s\-\_\(\)@#%&'éèàùâêîôûäëïöüçÉÈÀÙÂÊÎÔÛÄËÏÖÜÇ]+)(?:[-_]([Vv]\d+))?\.(.+)\.pbo$"
-    pattern = rf"^(CPC-({allowed_types})\[(\d{{2,3}})\]-?[\w\d\s\-\_\(\)@#%&'éèàùâêîôûäëïöüçÉÈÀÙÂÊÎÔÛÄËÏÖÜÇ]+)\.(.+)\.pbo$"
+    name_chars = r"[\w\d\s\-\_\(\)@#%&'éèàùâêîôûäëïöüçÉÈÀÙÂÊÎÔÛÄËÏÖÜÇ]+"
+    pattern = rf"^(CPC-({allowed_types})\[(\d{{2,3}})\]-?{name_chars})\.(.+)\.pbo$"
     match = re.match(pattern, filename)
     if not match:
         return None
     mission_name, mission_type, max_players, map_name = match.groups()
-    
-    pattern = rf"^(CPC-({allowed_types})\[(\d{{2,3}})\]-[\w\d\s\-\_\(\)@#%&'éèàùâêîôûäëïöüçÉÈÀÙÂÊÎÔÛÄËÏÖÜÇ]+)-([Vv]\d+)"
-    match = re.match(pattern, filename)
-    if not match:
-        # Version non fournie, on met V1 par défaut
+
+    # Essaie d'abord le format strict, puis le format récup (tags / _V)
+    version_match = re.match(
+        rf"^(CPC-({allowed_types})\[(\d{{2,3}})\]-{name_chars})-([Vv]\d+)",
+        filename,
+    )
+    if not version_match:
+        version_match = parse_mission_filename_lenient(filename)
+        if version_match:
+            return version_match
         version = "V1"
     else:
-        groups = list(match.groups())
+        groups = list(version_match.groups())
         mission_name = groups[0]
         version = groups[3]
     return mission_name, mission_type, max_players, version, map_name
@@ -100,8 +127,7 @@ def legacy_parse_mission_filename(filename):
 
 def recup_parse_mission_filename(filename):
     """
-    Temporaire récup : pas de rejet sur le nom.
-    Essaie le parse strict, sinon legacy, sinon stem/map avec défauts.
+    Parse récup : strict, puis assoupli (tags HC, _V), puis legacy, sinon stem/map.
     Retourne ((name, type, max_players, version, map), relaxed) ou None.
     """
     import os
@@ -112,6 +138,10 @@ def recup_parse_mission_filename(filename):
     strict = parse_mission_filename(filename)
     if strict:
         return strict, False
+
+    lenient = parse_mission_filename_lenient(filename)
+    if lenient:
+        return lenient, True
 
     legacy = legacy_parse_mission_filename(filename)
     if legacy:

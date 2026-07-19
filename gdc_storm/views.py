@@ -196,6 +196,7 @@ from .models import LegacyRole, LegacyMission, LegacyImportError, LegacyGameSess
 from .forms import MissionStatusForm
 from gdc_storm.utils import (
     parse_mission_filename,
+    parse_mission_filename_lenient,
     recup_parse_mission_filename,
     invalidate_session_list_cache,
     SESSION_LIST_CACHE_KEY,
@@ -600,6 +601,21 @@ def analyze_pbo_upload(filename, user=None, *, allow_pbo_restore=False):
                 'details': {},
             }
         parsed, filename_relaxed = parsed_pack
+    elif allow_pbo_restore:
+        # Récup : un peu plus souple (tags -HC / -(HC), version _V2) sans accepter n'importe quoi
+        strict = parse_mission_filename(filename)
+        parsed = strict or parse_mission_filename_lenient(filename)
+        if not parsed:
+            return {
+                'action': 'error',
+                'error': (
+                    "Nom de fichier invalide. Format attendu : "
+                    "CPC-TypeDeMission[XX]-Nom_De_La_Mission-VY[-TAG].nom_de_map.pbo "
+                    "(TAG optionnel ex. -HC ou -(HC))"
+                ),
+                'details': {},
+            }
+        filename_relaxed = strict is None
     else:
         parsed = parse_mission_filename(filename)
         if not parsed:
@@ -1094,7 +1110,7 @@ def _parse_recup_filename_for_dedupe(filename):
             return None
         parsed, _relaxed = parsed_pack
     else:
-        parsed = parse_mission_filename(filename)
+        parsed = parse_mission_filename(filename) or parse_mission_filename_lenient(filename)
         if not parsed:
             return None
     mission_name, _mission_type, max_players, version, map_name = parsed
@@ -1119,7 +1135,7 @@ def dedupe_recup_filenames(filenames):
                 'filename': filename,
                 'reason': (
                     "Nom de fichier invalide. Format attendu : "
-                    "CPC-TypeDeMission[XX]-Nom_De_La_Mission-VY.nom_de_map.pbo"
+                    "CPC-TypeDeMission[XX]-Nom_De_La_Mission-VY[-TAG].nom_de_map.pbo"
                 ),
             })
             continue
