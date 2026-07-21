@@ -31,7 +31,7 @@
                 {% csrf_token %}
                 <label for="verdict" style="font-weight:600;margin-right:8px;">Sélectionner le verdict :</label>
                 <select name="verdict" id="verdict" style="padding:6px 12px;">
-                    {% for value, label in session.VERDICT_CHOICES %}
+                    {% for value, label in verdict_choices %}
                         <option value="{{ value }}" {% if session.verdict == value %}selected{% endif %}>{{ label }}</option>
                     {% endfor %}
                 </select>

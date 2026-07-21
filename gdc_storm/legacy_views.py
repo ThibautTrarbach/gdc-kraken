@@ -193,7 +193,7 @@ def create_user_from_linkeduser(request):
     player = Player.objects.filter(name=linked_user).first()
     if player:
         player.users.add(user)
-    return JsonResponse({'success': True, 'message': f"Utilisateur '{linked_user}' créé avec succès." + (f" Player associé." if player else " Aucun Player associé."), 'password': password})
+    return JsonResponse({'success': True, 'message': f"Utilisateur '{linked_user}' créé avec succès." + (f" Player associé." if player else " Aucun Player associé.")})
 
 @require_POST
 @staff_member_required

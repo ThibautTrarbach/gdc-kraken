@@ -1,3 +1,5 @@
+import secrets
+
 from django.contrib import admin
 from django.contrib.auth.models import User, Group
 from django.contrib.auth.admin import UserAdmin as BaseUserAdmin
@@ -100,7 +102,6 @@ class ApiTokenForm(forms.ModelForm):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
         if not self.instance.pk:
-            import secrets
             self.fields['key'].initial = secrets.token_hex(32)
         self.fields['key'].widget.attrs['readonly'] = True
 

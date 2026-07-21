@@ -1796,7 +1796,7 @@ def serve_ocap_map_tile(request, world, rest):
         if request.method == 'HEAD':
             resp = HttpResponse(status=200, content_type=content_type)
         else:
-            resp = FileResponse(open(target, 'rb'), content_type=content_type)
+            resp = FileResponse(target.open('rb'), content_type=content_type)
         resp['Cache-Control'] = 'public, max-age=604800'
         return resp
 
@@ -2560,26 +2560,33 @@ def player_detail(request, player_id):
 @login_required
 def player_mapping(request):
     from .models import Player
+    from .player_linking import linkable_player_ids
+
     user = request.user
     players = (
         Player.objects.annotate(users_count=Count('users'))
         .prefetch_related('users')
         .order_by('name')
     )
+    linkable_ids = linkable_player_ids(user, players)
     if request.method == 'POST':
         selected_ids = request.POST.getlist('players')
-        # Ne permettre de lier que les Players non liés ou déjà liés à l'utilisateur
-        allowed_ids = []
-        for p in players:
-            linked_ids = {u.id for u in p.users.all()}
-            if not linked_ids or user.id in linked_ids:
-                allowed_ids.append(str(p.id))
+        allowed_ids = {str(pid) for pid in linkable_ids}
         filtered_ids = [int(pid) for pid in selected_ids if pid in allowed_ids]
         user.players.set(filtered_ids)
         user.save()
-        return render(request, 'gdc_storm/player_mapping.html', {'players': players, 'success': True, 'selected_ids': filtered_ids})
+        return render(request, 'gdc_storm/player_mapping.html', {
+            'players': players,
+            'success': True,
+            'selected_ids': filtered_ids,
+            'linkable_ids': linkable_ids,
+        })
     selected_ids = list(user.players.values_list('id', flat=True))
-    return render(request, 'gdc_storm/player_mapping.html', {'players': players, 'selected_ids': selected_ids})
+    return render(request, 'gdc_storm/player_mapping.html', {
+        'players': players,
+        'selected_ids': selected_ids,
+        'linkable_ids': linkable_ids,
+    })
 
 def session_list(request):
     # defaultdict est importé en début de fichier
@@ -2653,6 +2660,17 @@ def session_list(request):
         'order': order
     })
 
+def _verdict_choices_for_user(user, session):
+    """Participants : pas de @EFFACER ; superuser : tous les verdicts."""
+    if user.is_authenticated and user.is_superuser:
+        return session.VERDICT_CHOICES
+    return [
+        choice for choice in session.VERDICT_CHOICES
+        if choice[0] != session.VERDICT_EFFACER
+    ]
+
+
+@require_http_methods(['GET', 'POST'])
 def session_detail(request, session_id):
     session = get_object_or_404(GameSession, id=session_id)
     # Gestion du POST pour l'édition du statut des joueurs
@@ -2690,7 +2708,8 @@ def session_detail(request, session_id):
             messages.error(request, "Modification du verdict non autorisée.")
         else:
             verdict = request.POST.get('verdict')
-            if verdict in dict(GameSession.VERDICT_CHOICES):
+            allowed_verdicts = dict(_verdict_choices_for_user(request.user, session))
+            if verdict in allowed_verdicts:
                 session.verdict = verdict
                 session.save()
                 invalidate_session_list_cache()
@@ -2772,6 +2791,7 @@ def session_detail(request, session_id):
         'vivant_count': vivant_count,
         'session_players': session_players,
         'user_can_edit_verdict': user_can_edit_verdict,
+        'verdict_choices': _verdict_choices_for_user(request.user, session),
     })
 
 def orphan_sessions(request):

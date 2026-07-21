@@ -21,10 +21,10 @@
             {% for player in players %}
                 <tr>
                     <td>
-                        {% if player.users_count == 0 or player.id in selected_ids %}
+                        {% if player.id in linkable_ids %}
                             <input type="checkbox" name="players" value="{{ player.id }}" {% if player.id in selected_ids %}checked{% endif %}>
                         {% else %}
-                            <input type="checkbox" disabled>
+                            <input type="checkbox" disabled title="Ce pseudo est déjà associé à un autre compte, ou ne correspond pas à votre identité.">
                         {% endif %}
                     </td>
                     <td>{{ player.name }}</td>

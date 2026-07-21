@@ -4,10 +4,11 @@ from datetime import datetime, timezone
 from unittest.mock import MagicMock
 
 from django.contrib.auth.models import User
-from django.test import Client, TestCase
-from django.urls import clear_url_caches
+from django.core.cache import cache
+from django.test import Client, TestCase, override_settings
+from django.urls import clear_url_caches, reverse
 
-from gdc_storm.models import GameSession, Mission
+from gdc_storm.models import GameSession, GameSessionPlayer, Mission, Player
 from gdc_storm.views import get_upload_temp_dir, is_safe_upload_temp_path, save_uploaded_pbo_to_temp
 
 
@@ -110,3 +111,73 @@ class CriticalSecurityRegressionTests(TestCase):
 
         importlib.reload(urls_mod)
         clear_url_caches()
+
+    def test_player_mapping_blocks_unrelated_unlinked_player(self):
+        victim_player = Player.objects.create(name='RealParticipant')
+        unrelated = User.objects.create_user('attacker', 'a@evil.com', 'pass')
+        session = GameSession.objects.create(
+            mission=None,
+            name='CPC-CO[20]-Medal_of_honor',
+            map='altis',
+            version='1',
+            start_time=datetime(2026, 7, 2, 12, 0, tzinfo=timezone.utc),
+            verdict=GameSession.VERDICT_INCONNU,
+        )
+        GameSessionPlayer.objects.create(session=session, player=victim_player, role='SL')
+        self.client.login(username='attacker', password='pass')
+        self.client.post(
+            reverse('player_mapping'),
+            {'players': [str(victim_player.id)]},
+        )
+        self.assertFalse(unrelated.players.filter(id=victim_player.id).exists())
+        self.client.post(
+            reverse('session_detail', args=[session.id]),
+            {'set_verdict': '1', 'verdict': GameSession.VERDICT_SUCCES},
+        )
+        session.refresh_from_db()
+        self.assertEqual(session.verdict, GameSession.VERDICT_INCONNU)
+
+    def test_player_mapping_allows_name_match(self):
+        matched = Player.objects.create(name='regular')
+        self.client.login(username='regular', password='pass')
+        self.client.post(
+            reverse('player_mapping'),
+            {'players': [str(matched.id)]},
+        )
+        self.assertTrue(self.regular.players.filter(id=matched.id).exists())
+
+    def test_participant_cannot_set_effacer_verdict(self):
+        player = Player.objects.create(name='regular')
+        player.users.add(self.regular)
+        session = GameSession.objects.create(
+            mission=None,
+            name='CPC-CO[20]-Medal_of_honor',
+            map='altis',
+            version='1',
+            start_time=datetime(2026, 7, 3, 12, 0, tzinfo=timezone.utc),
+            verdict=GameSession.VERDICT_INCONNU,
+        )
+        GameSessionPlayer.objects.create(session=session, player=player, role='SL')
+        self.client.login(username='regular', password='pass')
+        self.client.post(
+            reverse('session_detail', args=[session.id]),
+            {'set_verdict': '1', 'verdict': GameSession.VERDICT_EFFACER},
+        )
+        session.refresh_from_db()
+        self.assertEqual(session.verdict, GameSession.VERDICT_INCONNU)
+
+    @override_settings(
+        CACHES={
+            'default': {
+                'BACKEND': 'django.core.cache.backends.locmem.LocMemCache',
+            }
+        }
+    )
+    def test_login_rate_limit_returns_429(self):
+        cache.clear()
+        for _ in range(21):
+            resp = self.client.post(
+                reverse('login'),
+                {'username': 'nobody', 'password': 'wrong'},
+            )
+        self.assertEqual(resp.status_code, 429)
