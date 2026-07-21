@@ -1,8 +1,10 @@
 # Python
 __pycache__/
-*.pyc
+**/.pytest_cache/
+*.py[cod]
 *.pyo
 *.pyd
+*.egg-info
 
 # SQLite database files
 *.sqlite3
@@ -13,13 +15,16 @@ __pycache__/
 # pbo files
 *.pbo
 
+# Archives OCAP (sync locale maps-cdn)
+*.7z
+
 # Virtual environments
 venv*/
 
-# Environment
+# Environment / secrets
 .env
-.env.local
-.env.*.local
+.env.*
+!.env.example
 
 # VSCode
 .vscode/
@@ -34,8 +39,22 @@ venv*/
 # Missions files
 missions/
 
-# Config file
+# Tuiles OCAP synchronisées (volume Docker / bind-mount host)
+ocap_maps/
+
+# Config locale (exemple Docker versionné)
 config*.json
+!config.docker.json.example
+
+# Artefacts collectstatic (WhiteNoise) — sources dans gdc_storm/static/
+staticfiles/**/*.br
+staticfiles/**/*.gz
+
+# Scripts locaux avec secrets ou tests manuels
+scripts/test_ocap_maps_local.py
+
+# Logs debug (sessions Cursor / agents)
+debug-*.log
 
 # Not ready files
 README.md

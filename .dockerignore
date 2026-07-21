@@ -1,21 +1,46 @@
+# Git / IDE
 .git
 .gitignore
+.gitattributes
+.vscode
+.idea
+.DS_Store
+
+# Python env / cache
 .venv
 venv
-__pycache__
+**/__pycache__
+**/.pytest_cache
 *.py[cod]
+*.egg-info
+
+# Secrets / config locale
+.env
+.env.*
+config.json
+config*.json
+!config.docker.json.example
+
+# Données runtime — NE JAMAIS inclure dans l'image (volumes Docker / bind-mounts).
+# ocap_maps peut atteindre des centaines de Go si synchronisé sur le host.
+missions/
+data/
+ocap_maps/
+staticfiles/
+db.sqlite3
 *.sqlite3
 *.db
 *.db3
-missions/
-data/
-.env
-config*.json
-!config.docker.json.example
+
+# Gros binaires
 *.pbo
-.vscode
-.DS_Store
+*.7z
+
+# Docs / dev / services annexes (non nécessaires dans l'image Storm)
 README.md
 docs/
-**/.pytest_cache
-**/__pycache__
+scripts/
+services/
+docker-compose*.yml
+Dockerfile*
+.dockerignore

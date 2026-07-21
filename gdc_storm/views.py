@@ -226,7 +226,30 @@ from gdc_storm.stats_helpers import (
     top_missions_for_sessions,
     published_missions_win_rate,
 )
-from gdc_storm.pbo_extract import is_sqm_binarized, extract_mission_data_from_pbo, extract_briefing_from_pbo
+from gdc_storm.arma3map import ARMA_MARKER_COLORS, MARKER_ICON_MAP
+from gdc_storm.ocap_maps import (
+    get_mission_map_config,
+    is_local_map_ready,
+    is_syncing,
+    local_tile_url_template,
+    maybe_kick_ocap_sync,
+    ocap_maps_cdn_url,
+    ocap_sync_status,
+    proxy_maps_cdn_status,
+    resolve_safe_tile_path,
+    start_sync_ocap_world_async,
+    fetch_maps_cdn_tile,
+)
+from gdc_storm.pbo_extract import (
+    is_sqm_binarized,
+    extract_mission_data_from_pbo,
+    extract_briefing_from_pbo,
+    extract_markers_from_pbo,
+    save_markers_to_storage,
+    delete_markers_file,
+    get_mission_markers_status,
+    load_markers_from_mission,
+)
 from django.core.paginator import Paginator
 
 STATS_CACHE_TTL = 300
@@ -1690,10 +1713,57 @@ def mission_detail(request, mission_id):
     gsp_qs = GameSessionPlayer.objects.filter(session__mission=mission)
     roles = role_breakdown(gsp_qs, limit=5)
     top_players = top_players_for_gsp(gsp_qs, limit=5)
+    arma3map_config = None  # compat tests / anciens templates
+    mission_map_config = get_mission_map_config(mission.map)
+    if mission_map_config and mission_map_config.get('provider') == 'arma3map':
+        arma3map_config = mission_map_config
+    markers_status = get_mission_markers_status(mission)
+    markers_visible = markers_status['visible']
+    map_supported = bool(mission_map_config)
+    show_map_tab = map_supported and bool(markers_visible)
+    ocap_sync_pending = (
+        bool(mission_map_config)
+        and mission_map_config.get('provider') == 'ocap'
+        and not mission_map_config.get('local_ready')
+    )
+    if ocap_sync_pending and mission_map_config.get('world_name'):
+        kick = maybe_kick_ocap_sync(mission_map_config['world_name'])
+        if kick and kick.get('status') == 'error':
+            logging.warning(
+                'Sync OCAP non démarrée pour %s : %s',
+                mission_map_config['world_name'],
+                kick.get('error'),
+            )
+    briefing_marker_targets = {}
+    for m in markers_status.get('raw') or []:
+        if not isinstance(m, dict):
+            continue
+        mname = (m.get('name') or '').strip()
+        if not mname:
+            continue
+        try:
+            briefing_marker_targets[mname.lower()] = {
+                'name': mname,
+                'x': float(m['x']),
+                'z': float(m['z']),
+                'text': (m.get('text') or '').strip(),
+            }
+        except (KeyError, TypeError, ValueError):
+            continue
     return render(request, 'gdc_storm/mission_detail.html', {
         'mission': mission,
         'success': success,
         'map_display': map_display,
+        'markers': markers_visible,
+        'markers_status': markers_status,
+        'mission_map_config': mission_map_config,
+        'arma3map_config': arma3map_config or mission_map_config,
+        'arma_marker_colors': ARMA_MARKER_COLORS,
+        'arma_marker_icons': MARKER_ICON_MAP,
+        'map_supported': map_supported,
+        'show_map_tab': show_map_tab,
+        'ocap_sync_pending': ocap_sync_pending,
+        'briefing_marker_targets': briefing_marker_targets,
         'can_edit_status': can_edit_status,
         'can_edit_owner': can_edit_owner,
         'status_form': status_form,
@@ -1708,6 +1778,84 @@ def mission_detail(request, mission_id):
             'top_players': top_players,
         },
     })
+
+
+@require_http_methods(['GET', 'HEAD'])
+def serve_ocap_map_tile(request, world, rest):
+    """Sert une tuile OCAP : stockage local Storm, sinon proxy maps-cdn."""
+    from django.http import FileResponse, Http404, HttpResponse
+
+    target = resolve_safe_tile_path(world, rest)
+    if target is not None:
+        content_type = 'image/png'
+        lower = target.name.lower()
+        if lower.endswith('.json'):
+            content_type = 'application/json'
+        elif lower.endswith('.jpg') or lower.endswith('.jpeg'):
+            content_type = 'image/jpeg'
+        if request.method == 'HEAD':
+            resp = HttpResponse(status=200, content_type=content_type)
+        else:
+            resp = FileResponse(open(target, 'rb'), content_type=content_type)
+        resp['Cache-Control'] = 'public, max-age=604800'
+        return resp
+
+    proxied = fetch_maps_cdn_tile(world, rest)
+    if proxied is None:
+        raise Http404('Tuile OCAP introuvable')
+    content, content_type = proxied
+    if request.method == 'HEAD':
+        resp = HttpResponse(status=200, content_type=content_type)
+    else:
+        resp = HttpResponse(content, content_type=content_type)
+    resp['Cache-Control'] = 'public, max-age=604800'
+    return resp
+
+
+@require_http_methods(['GET', 'POST'])
+def ocap_map_sync(request):
+    """Statut / sync OCAP : délègue au maps-cdn si configuré, sinon storage local."""
+    if request.method == 'POST':
+        world = (request.POST.get('world') or '').strip()
+        if not world and request.content_type and 'json' in request.content_type:
+            try:
+                body = json.loads(request.body.decode('utf-8') or '{}')
+            except Exception:
+                body = {}
+            world = (body.get('world') or '').strip()
+        force = False
+        if request.POST.get('force') in ('1', 'true', 'True'):
+            force = True
+        elif request.content_type and 'json' in (request.content_type or ''):
+            try:
+                body = json.loads(request.body.decode('utf-8') or '{}')
+                force = bool(body.get('force'))
+            except Exception:
+                pass
+        if not world:
+            return JsonResponse({'status': 'error', 'error': 'world requis'}, status=400)
+        result = start_sync_ocap_world_async(world, force=force)
+        result['world'] = world
+        # Toujours same-origin pour le navigateur (jamais d'IP privée CDN).
+        result['tile_url_local'] = local_tile_url_template(world)
+        if 'local_ready' not in result:
+            if ocap_maps_cdn_url():
+                result['local_ready'] = result.get('status') == 'ready'
+            else:
+                result['local_ready'] = is_local_map_ready(world)
+        if 'syncing' not in result:
+            result['syncing'] = (
+                result.get('status') == 'queued'
+                if ocap_maps_cdn_url()
+                else is_syncing(world)
+            )
+        return JsonResponse(result)
+
+    world = (request.GET.get('world') or '').strip()
+    if not world:
+        return JsonResponse({'status': 'error', 'error': 'world requis'}, status=400)
+    return JsonResponse(ocap_sync_status(world))
+
 
 # Delete mission view
 @require_POST
@@ -1735,6 +1883,7 @@ def delete_mission(request, mission_id):
                 default_storage.delete(img_path)
             except Exception:
                 pass
+    delete_markers_file(mission.markers_file)
     # Suppression du fichier .pbo en stockage
     pbo_name = resolve_pbo_on_disk(mission_pbo_candidate_names(mission))
     if pbo_name:
@@ -2022,6 +2171,7 @@ def create_mission_from_pbo(
     if briefing_images:
         mission.briefing_images = briefing_images
         mission.save(update_fields=['briefing_images'], skip_name_check=not strict)
+    _apply_markers_from_pbo(pbo, mission, warnings=warnings, strict=strict)
     try:
         save_pbo_to_storage(temp_file_path, filename)
     except Exception as e:
@@ -2029,6 +2179,141 @@ def create_mission_from_pbo(
     clear_mission_pbo_missing(mission)
     warning_msg = format_errors(warnings)
     return mission, warning_msg
+
+
+def _apply_markers_from_pbo(pbo, mission, *, warnings, strict=True):
+    markers, marker_problems = extract_markers_from_pbo(pbo)
+    if marker_problems:
+        warnings.extend(marker_problems)
+    delete_markers_file(mission.markers_file)
+    markers_path = save_markers_to_storage(markers, mission_id=mission.pk)
+    mission.markers_file = markers_path or ''
+    mission.save(update_fields=['markers_file'], skip_name_check=not strict)
+
+
+def _extract_loadscreen_from_pbo(pbo, data):
+    """Extrait loadScreen du PBO vers le storage. Retourne le chemin relatif ou None."""
+    loadscreen_path = data.get('loadScreen') if data else None
+    if not loadscreen_path:
+        return None
+    try:
+        ext = os.path.splitext(loadscreen_path)[1].lower()
+        if ext not in ['.jpg', '.jpeg', '.png']:
+            logging.info(f"Image loadScreen ignorée (format non supporté) : {loadscreen_path}")
+            return None
+        img_entry = pbo[loadscreen_path]
+        img_filename = os.path.join(settings.MISSIONS_IMAGES_STORAGE_PATH, f"{uuid.uuid4()}{ext}")
+        os.makedirs(
+            os.path.join(default_storage.location, settings.MISSIONS_IMAGES_STORAGE_PATH),
+            exist_ok=True,
+        )
+        with default_storage.open(img_filename, 'wb') as imgfile:
+            imgfile.write(img_entry.data)
+        return img_filename
+    except Exception as e:
+        logging.warning(f"Erreur lors de l'extraction de l'image loadScreen : {e}")
+        return None
+
+
+def reextract_mission_content_from_pbo(
+    mission,
+    pbo,
+    *,
+    briefing=True,
+    markers=True,
+    loadscreen=True,
+    meta=False,
+    dry_run=False,
+):
+    """
+    Régénère briefing / images / loadScreen / marqueurs / métadonnées texte
+    depuis un PBO déjà stocké. Ne modifie pas name, version, map, type, max_players.
+    Retourne (summary_dict, notes_list).
+    """
+    notes = []
+    summary = {
+        'briefing_items': None,
+        'briefing_images': None,
+        'markers': None,
+        'loadscreen': None,
+        'meta': False,
+    }
+
+    need_data = loadscreen or meta
+    data = {}
+    if need_data:
+        data, extraction_problems = extract_mission_data_from_pbo(pbo)
+        if extraction_problems:
+            notes.extend(extraction_problems)
+
+    if dry_run:
+        if briefing:
+            summary['briefing_items'] = 'would-refresh'
+            summary['briefing_images'] = 'would-refresh'
+        if loadscreen:
+            summary['loadscreen'] = 'would-refresh' if data.get('loadScreen') else 'none'
+        if markers:
+            markers_preview, marker_problems = extract_markers_from_pbo(pbo)
+            summary['markers'] = len(markers_preview)
+            notes.extend(marker_problems)
+        if meta:
+            summary['meta'] = True
+        return summary, notes
+
+    update_fields = []
+
+    if briefing:
+        try:
+            new_briefing, new_images = extract_briefing_from_pbo(pbo)
+            if new_briefing is None:
+                new_briefing = []
+                notes.append('Briefing non trouvé ou invalide.')
+        except Exception as e:
+            new_briefing = []
+            new_images = []
+            notes.append(f'Erreur extraction briefing : {e}')
+        old_images = list(mission.briefing_images or [])
+        mission.briefing = new_briefing
+        mission.briefing_images = new_images or []
+        update_fields.extend(['briefing', 'briefing_images'])
+        for img_path in old_images:
+            try:
+                default_storage.delete(img_path)
+            except Exception:
+                pass
+        summary['briefing_items'] = len(new_briefing)
+        summary['briefing_images'] = len(new_images or [])
+
+    if loadscreen:
+        if mission.loadScreen:
+            try:
+                mission.loadScreen.delete(save=False)
+            except Exception:
+                pass
+        loadscreen_file = _extract_loadscreen_from_pbo(pbo, data)
+        mission.loadScreen = loadscreen_file
+        update_fields.append('loadScreen')
+        summary['loadscreen'] = loadscreen_file or ''
+
+    if meta:
+        mission.authors = data.get('author') or ''
+        mission.min_players = int(data['minPlayers']) if data.get('minPlayers') else None
+        mission.onLoadMission = data.get('onLoadMission') or Mission.DEFAULT_NOT_PROVIDED
+        mission.overviewText = data.get('overviewText') or Mission.DEFAULT_NOT_PROVIDED
+        update_fields.extend(['authors', 'min_players', 'onLoadMission', 'overviewText'])
+        summary['meta'] = True
+
+    if update_fields:
+        mission.save(update_fields=update_fields, skip_name_check=True)
+
+    if markers:
+        marker_notes = []
+        _apply_markers_from_pbo(pbo, mission, warnings=marker_notes, strict=False)
+        notes.extend(marker_notes)
+        markers_list = load_markers_from_mission(mission) if mission.markers_file else []
+        summary['markers'] = len(markers_list)
+
+    return summary, notes
 
 
 def format_errors(errors):
@@ -2147,6 +2432,7 @@ def update_mission_from_pbo(
             loadscreen_file = None
     existing_mission.loadScreen = loadscreen_file
     existing_mission.save(skip_name_check=not strict)
+    _apply_markers_from_pbo(pbo, existing_mission, warnings=warnings, strict=strict)
     if not skip_pbo_storage:
         try:
             save_pbo_to_storage(temp_file_path, filename)

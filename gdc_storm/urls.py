@@ -29,6 +29,8 @@ urlpatterns = [
     path('missions/', views.mission_list, name='mission_list'),
     path('missions/<int:mission_id>/', views.mission_detail, name='mission_detail'),
     path('missions/<int:mission_id>/delete/', views.delete_mission, name='delete_mission'),
+    path('maps/ocap/sync/', views.ocap_map_sync, name='ocap_map_sync'),
+    path('maps/ocap/<str:world>/<path:rest>', views.serve_ocap_map_tile, name='serve_ocap_map_tile'),
     path('login/', auth_views.LoginView.as_view(template_name='gdc_storm/login.html'), name='login'),
     path('logout/', logout_redirect, name='logout'),  # GET redirige vers home
     path('logout-post/', auth_views.LogoutView.as_view(), name='logout_post'),  # POST seulement

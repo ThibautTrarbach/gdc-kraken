@@ -66,4 +66,5 @@ python manage.py collectstatic --noinput
 exec gunicorn gdc_kraken.wsgi:application \
     --bind "$GUNICORN_BIND" \
     --workers "$GUNICORN_WORKERS" \
-    --timeout "$GUNICORN_TIMEOUT"
+    --timeout "$GUNICORN_TIMEOUT" \
+    --no-control-socket

@@ -127,6 +127,9 @@
             <div class="mission-tabs" style="margin-bottom:24px;">
                 <div style="display:flex;gap:0;">
                     <button id="tab-briefing" class="tab-btn" style="flex:1 1 0;padding:10px 0;font-weight:700;font-size:1.08em;background:#1976d2;color:#fff;border:none;border-radius:8px 8px 0 0;cursor:pointer;">Briefing</button>
+                    {% if show_map_tab %}
+                    <button id="tab-carte" class="tab-btn" style="flex:1 1 0;padding:10px 0;font-weight:700;font-size:1.08em;background:#eee;color:#1976d2;border:none;border-radius:8px 8px 0 0;cursor:pointer;">Carte</button>
+                    {% endif %}
                     <button id="tab-sessions" class="tab-btn" style="flex:1 1 0;padding:10px 0;font-weight:700;font-size:1.08em;background:#eee;color:#1976d2;border:none;border-radius:8px 8px 0 0;cursor:pointer;">Sessions</button>
                     <button id="tab-stats" class="tab-btn" style="flex:1 1 0;padding:10px 0;font-weight:700;font-size:1.08em;background:#eee;color:#1976d2;border:none;border-radius:8px 8px 0 0;cursor:pointer;">Stats</button>
                 </div>
@@ -146,6 +149,19 @@
                         <div style="color:#888;font-size:1.1em;">Aucun briefing structuré trouvé.</div>
                     {% endif %}
                 </div>
+                {% if show_map_tab %}
+                <div id="tab-content-carte" class="tab-content" style="display:none;background:#fff;border-radius:0 0 8px 8px;padding:12px 8px 8px 8px;">
+                    {% csrf_token %}
+                    <div id="mission-map-status" class="{% if ocap_sync_pending %}mission-map-sync-panel{% endif %}" style="{% if not ocap_sync_pending %}color:#888;font-size:0.95em;padding:8px 12px;{% endif %}">
+                        {% if ocap_sync_pending %}
+                        La carte « {{ mission_map_config.display_name|default:mission_map_config.world_name }} » n'est pas encore disponible sur le miroir. Synchronisation en cours…
+                        {% else %}
+                        Chargement de la carte…
+                        {% endif %}
+                    </div>
+                    <div id="mission-map" class="mission-map-canvas{% if ocap_sync_pending %} mission-map-hidden{% endif %}" role="img" aria-label="Carte de la mission"{% if ocap_sync_pending %} aria-hidden="true"{% endif %}></div>
+                </div>
+                {% endif %}
                 <div id="tab-content-sessions" class="tab-content" style="display:none;background:#fff;border-radius:0 0 8px 8px;padding:24px 18px 18px 18px;">
                     {% if sessions_data %}
                         <table style="width:100%;table-layout:auto;">
@@ -238,6 +254,13 @@
         </div>
     </div>
 </div>
+{% if show_map_tab %}
+{{ markers|json_script:"mission-markers-data" }}
+{{ mission_map_config|json_script:"mission-map-config-data" }}
+{{ arma_marker_colors|json_script:"arma-marker-colors-data" }}
+{{ arma_marker_icons|json_script:"arma-marker-icons-data" }}
+{{ briefing_marker_targets|json_script:"briefing-marker-targets-data" }}
+{% endif %}
 <script>
 // Popup statut (uniquement si le bouton existe)
 var openStatusBtn = document.getElementById('open-status-popup');
@@ -278,14 +301,1337 @@ window.addEventListener('click', function(e) {
         ownerPopup.style.display = 'none';
     }
 });
-// Onglets Briefing / Sessions / Stats
+// Onglets Briefing / Sessions / Stats / Carte
+var missionMapInitialized = false;
+var missionLeafletMap = null;
+var missionMapBounds = null;
+var missionMapDefaultZoom = 3;
+var missionMarkerLayersByName = {};
+var missionMapConfig = null;
+var missionMapTileLayer = null;
+var missionMapOcapSyncStarted = false;
+var missionMapSyncPending = false;
+var missionMapPendingOcap = null;
+var missionMapOcapMissingPolls = 0;
+var BRIEFING_MARKER_TARGETS = {};
+(function() {
+    var el = document.getElementById('briefing-marker-targets-data');
+    if (el) {
+        try {
+            BRIEFING_MARKER_TARGETS = JSON.parse(el.textContent) || {};
+        } catch (e) {
+            BRIEFING_MARKER_TARGETS = {};
+        }
+    }
+})();
+var missionMapLabelsEnabled = true;
+
+function applyMissionMapLabelsVisibility(enabled) {
+    missionMapLabelsEnabled = !!enabled;
+    var mapEl = document.getElementById('mission-map');
+    if (mapEl) {
+        if (missionMapLabelsEnabled) {
+            mapEl.classList.remove('mission-map-labels-off');
+        } else {
+            mapEl.classList.add('mission-map-labels-off');
+        }
+    }
+    // Forcer l'etat Leaflet (permanent tooltips / hover sticky).
+    if (missionMarkerLayersByName) {
+        Object.keys(missionMarkerLayersByName).forEach(function(key) {
+            var entry = missionMarkerLayersByName[key];
+            var layer = entry && entry.layer;
+            if (!layer || typeof layer.getTooltip !== 'function') {
+                return;
+            }
+            var tip = layer.getTooltip();
+            if (!tip) {
+                return;
+            }
+            if (missionMapLabelsEnabled) {
+                if (tip.options && tip.options.permanent) {
+                    try { layer.openTooltip(); } catch (e) { /* ignore */ }
+                }
+            } else {
+                try { layer.closeTooltip(); } catch (e) { /* ignore */ }
+            }
+        });
+    }
+    var btn = document.getElementById('mission-map-labels-btn');
+    if (btn) {
+        btn.innerHTML = missionMapLabelsEyeSvg(!missionMapLabelsEnabled);
+        if (missionMapLabelsEnabled) {
+            btn.classList.remove('is-off');
+            btn.setAttribute('aria-pressed', 'true');
+            btn.title = 'Masquer les étiquettes';
+        } else {
+            btn.classList.add('is-off');
+            btn.setAttribute('aria-pressed', 'false');
+            btn.title = 'Afficher les étiquettes';
+        }
+    }
+}
+
+function missionMapLabelsEyeSvg(crossed) {
+    // Icone epuree type Lucide, alignee sur la grille 24x24.
+    if (crossed) {
+        return (
+            '<svg class="mission-map-eye-icon" viewBox="0 0 24 24" width="15" height="15" aria-hidden="true">' +
+            '<path fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" ' +
+            'd="M2.062 12.348a1 1 0 010-.696 10.75 10.75 0 0119.876 0 1 1 0 010 .696 10.75 10.75 0 01-19.876 0"/>' +
+            '<circle cx="12" cy="12" r="3" fill="none" stroke="currentColor" stroke-width="1.75"/>' +
+            '<path fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" d="M4 4l16 16"/>' +
+            '</svg>'
+        );
+    }
+    return (
+        '<svg class="mission-map-eye-icon" viewBox="0 0 24 24" width="15" height="15" aria-hidden="true">' +
+        '<path fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" ' +
+        'd="M2.062 12.348a1 1 0 010-.696 10.75 10.75 0 0119.876 0 1 1 0 010 .696 10.75 10.75 0 01-19.876 0"/>' +
+        '<circle cx="12" cy="12" r="3" fill="none" stroke="currentColor" stroke-width="1.75"/>' +
+        '</svg>'
+    );
+}
+
+function addMissionMapLabelsControl(map) {
+    if (!map || !window.L || !L.Control) {
+        return;
+    }
+    var LabelsControl = L.Control.extend({
+        options: { position: 'topleft' },
+        onAdd: function() {
+            var container = L.DomUtil.create('div', 'leaflet-bar leaflet-control mission-map-labels-control');
+            var link = L.DomUtil.create('a', 'mission-map-labels-btn', container);
+            link.id = 'mission-map-labels-btn';
+            link.href = '#';
+            link.setAttribute('role', 'button');
+            link.setAttribute('aria-label', 'Afficher ou masquer les étiquettes');
+            link.innerHTML = missionMapLabelsEyeSvg(false);
+            L.DomEvent.disableClickPropagation(container);
+            L.DomEvent.disableScrollPropagation(container);
+            function toggleLabels(e) {
+                L.DomEvent.stop(e);
+                applyMissionMapLabelsVisibility(!missionMapLabelsEnabled);
+            }
+            L.DomEvent.on(link, 'click', toggleLabels);
+            L.DomEvent.on(link, 'mousedown', L.DomEvent.stopPropagation);
+            return container;
+        },
+    });
+    map.addControl(new LabelsControl());
+    applyMissionMapLabelsVisibility(true);
+}
+
+var ARMA_MARKER_COLORS = {};
+var MARKER_ICON_MAP = {};
+(function() {
+    var el = document.getElementById('arma-marker-colors-data');
+    if (el) {
+        ARMA_MARKER_COLORS = JSON.parse(el.textContent);
+    }
+    var iconsEl = document.getElementById('arma-marker-icons-data');
+    if (iconsEl) {
+        MARKER_ICON_MAP = JSON.parse(iconsEl.textContent) || {};
+    }
+})();
+
+var DEFAULT_MARKER_COLOR = '#000000';
+var NATO_SIDE_DEFAULT_COLORS = {
+    b: '#004C99',
+    o: '#7F0000',
+    n: '#007F00',
+    c: '#66007F',
+};
+var MARKER_ICON_SIZES = {
+    nato: 30,
+    loc: 26,
+    point: 28,
+    flag: 28,
+};
+
+function resolveMarkerIconFile(markerType) {
+    var raw = (markerType || '').toLowerCase();
+    if (raw.endsWith('_noshadow')) {
+        raw = raw.slice(0, -9);
+    }
+    if (raw === 'rectangle' || raw === 'ellipse' || raw === 'empty' || raw === 'icon') {
+        return MARKER_ICON_MAP.hd_dot || 'hd_dot.png';
+    }
+    if (MARKER_ICON_MAP[raw]) {
+        return MARKER_ICON_MAP[raw];
+    }
+    if (raw.indexOf('hd_') === 0 || raw.indexOf('mil_') === 0) {
+        return MARKER_ICON_MAP.hd_unknown || 'hd_unknown.png';
+    }
+    if (raw.indexOf('flag_') === 0) {
+        return MARKER_ICON_MAP[raw] || MARKER_ICON_MAP.hd_flag || 'hd_flag.png';
+    }
+    if (raw.indexOf('loc_') === 0) {
+        return MARKER_ICON_MAP.mil_marker || 'mil_marker.png';
+    }
+    if (raw.length >= 3 && raw.charAt(1) === '_') {
+        return MARKER_ICON_MAP.mil_marker || 'mil_marker.png';
+    }
+    return MARKER_ICON_MAP.hd_unknown || 'hd_unknown.png';
+}
+
+function markerHasPngIcon(markerType) {
+    var raw = normalizeMarkerType(markerType);
+    return !!MARKER_ICON_MAP[raw];
+}
+
+function resolveMarkerColorCss(colorValue) {
+    var raw = (colorValue || '').trim();
+    if (!raw) {
+        return DEFAULT_MARKER_COLOR;
+    }
+    if (raw.charAt(0) === '#') {
+        return raw;
+    }
+    if (ARMA_MARKER_COLORS[raw]) {
+        return ARMA_MARKER_COLORS[raw];
+    }
+    var lower = raw.toLowerCase();
+    var key;
+    for (key in ARMA_MARKER_COLORS) {
+        if (key.toLowerCase() === lower) {
+            return ARMA_MARKER_COLORS[key];
+        }
+    }
+    if (raw.indexOf('Color') !== 0 && raw.indexOf('color') !== 0) {
+        var prefixed = 'Color' + raw.charAt(0).toUpperCase() + raw.slice(1);
+        if (ARMA_MARKER_COLORS[prefixed]) {
+            return ARMA_MARKER_COLORS[prefixed];
+        }
+    }
+    return DEFAULT_MARKER_COLOR;
+}
+
+function resolveMarkerDisplayColor(markerType, colorValue) {
+    var raw = (colorValue || '').trim();
+    var lower = raw.toLowerCase();
+    var nato = parseNatoMarkerType(markerType);
+    // NATO sans couleur Eden explicite → couleur de camp (comme in-game).
+    var unset = !raw || lower === 'default' || lower === 'colordefault';
+    if (nato && unset) {
+        return NATO_SIDE_DEFAULT_COLORS[nato.side] || DEFAULT_MARKER_COLOR;
+    }
+    return resolveMarkerColorCss(colorValue);
+}
+
+function markerVisibilityFilter(cssColor) {
+    // Blanc / jaune clair : contour noir pour rester lisible sur la carte claire.
+    if (colorLuminance(cssColor) > 0.72) {
+        return 'filter:drop-shadow(0 0 1px #000) drop-shadow(0 1px 0 #000) drop-shadow(1px 0 0 #000) drop-shadow(-1px 0 0 #000) drop-shadow(0 -1px 0 #000);';
+    }
+    return 'filter:drop-shadow(0 0 1px rgba(0,0,0,0.55));';
+}
+
+function markerIconKind(markerType) {
+    var raw = normalizeMarkerType(markerType);
+    if (markerTypeIsFlag(markerType)) {
+        return 'flag';
+    }
+    if (parseNatoMarkerType(markerType)) {
+        return 'nato';
+    }
+    if (parseLocMarkerType(markerType)) {
+        return 'loc';
+    }
+    return 'point';
+}
+
+function markerTypeIsFlag(markerType) {
+    var raw = (markerType || '').toLowerCase();
+    if (raw.endsWith('_noshadow')) {
+        raw = raw.slice(0, -9);
+    }
+    return raw.indexOf('flag_') === 0;
+}
+
+function normalizeMarkerType(markerType) {
+    var raw = (markerType || '').toString().trim().toLowerCase();
+    if (!raw) {
+        return '';
+    }
+    if (raw.endsWith('_noshadow')) {
+        raw = raw.slice(0, -9);
+    }
+    // Ex: \a3\ui_f\data\map\markers\nato\o_inf.paa → o_inf
+    raw = raw.replace(/\\/g, '/');
+    if (raw.indexOf('/') >= 0) {
+        raw = raw.split('/').pop() || raw;
+    }
+    raw = raw.replace(/\.(paa|png|jpg|jpeg)$/i, '');
+    return raw;
+}
+
+function resolveIconType(marker) {
+    var t = normalizeMarkerType(marker && marker.type);
+    if (t && t !== 'empty' && (markerHasPngIcon(t) || parseNatoMarkerType(t) || parseLocMarkerType(t) || t.indexOf('mil_') === 0 || t.indexOf('hd_') === 0 || t.indexOf('flag_') === 0)) {
+        return t;
+    }
+    if (marker && marker.icon) {
+        var fromIcon = normalizeMarkerType(marker.icon);
+        if (fromIcon) {
+            return fromIcon;
+        }
+    }
+    // Toujours un glyphe visible plutot qu'un marqueur fantome.
+    return t && t !== 'empty' && t !== 'icon' ? t : 'mil_dot';
+}
+
+function parseNatoMarkerType(markerType) {
+    var raw = normalizeMarkerType(markerType);
+    var m = /^([bonc])_([a-z0-9_]+)$/i.exec(raw);
+    if (!m) {
+        return null;
+    }
+    return { side: m[1].toLowerCase(), role: m[2].toLowerCase() };
+}
+
+function parseLocMarkerType(markerType) {
+    var raw = normalizeMarkerType(markerType);
+    if (raw.indexOf('loc_') !== 0) {
+        return null;
+    }
+    return raw.slice(4);
+}
+
+function colorLuminance(cssColor) {
+    var hex = (cssColor || '').replace('#', '');
+    if (hex.length === 3) {
+        hex = hex[0] + hex[0] + hex[1] + hex[1] + hex[2] + hex[2];
+    }
+    if (hex.length !== 6) {
+        return 0;
+    }
+    var r = parseInt(hex.slice(0, 2), 16);
+    var g = parseInt(hex.slice(2, 4), 16);
+    var b = parseInt(hex.slice(4, 6), 16);
+    return (0.299 * r + 0.587 * g + 0.114 * b) / 255;
+}
+
+function contrastInk(cssColor) {
+    return colorLuminance(cssColor) > 0.62 ? '#111111' : '#ffffff';
+}
+
+function natoFramePath(side) {
+    // APP-6 : ami=rectangle, ennemi=losange, neutre=carre, civil=cercle/quatrefeuille.
+    if (side === 'o') {
+        return 'M16 3 L29 16 L16 29 L3 16 Z';
+    }
+    if (side === 'n') {
+        return 'M6 6 H26 V26 H6 Z';
+    }
+    if (side === 'c') {
+        return null;
+    }
+    return 'M5 7 H27 V25 H5 Z';
+}
+
+function natoRoleGlyph(role, ink) {
+    var s = 'stroke="' + ink + '" fill="none" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"';
+    var f = 'fill="' + ink + '" stroke="none"';
+    if (role === 'inf' || role === 'recon') {
+        return '<path ' + s + ' d="M10 10 L22 22 M22 10 L10 22"/>';
+    }
+    if (role === 'mech_inf') {
+        return '<path ' + s + ' d="M10 10 L22 22 M22 10 L10 22"/><ellipse ' + s + ' cx="16" cy="16" rx="9" ry="5.5"/>';
+    }
+    if (role === 'motor_inf') {
+        return '<path ' + s + ' d="M10 10 L22 22 M22 10 L10 22"/><circle ' + s + ' cx="11" cy="22" r="2"/><circle ' + s + ' cx="21" cy="22" r="2"/>';
+    }
+    if (role === 'armor') {
+        return '<ellipse ' + s + ' cx="16" cy="16" rx="8" ry="5"/>';
+    }
+    if (role === 'air' || role === 'plane' || role === 'uav') {
+        return '<path ' + s + ' d="M16 8 L16 24 M8 14 L24 14 M10 20 L16 14 L22 20"/>';
+    }
+    if (role === 'hq') {
+        return '<rect ' + f + ' x="8" y="12" width="16" height="8"/>';
+    }
+    if (role === 'med') {
+        return '<path ' + s + ' d="M16 9 V23 M9 16 H23"/>';
+    }
+    if (role === 'mortar' || role === 'art' || role === 'support') {
+        return '<circle ' + f + ' cx="16" cy="16" r="3.2"/>';
+    }
+    if (role === 'naval') {
+        return '<path ' + s + ' d="M16 8 V14 M10 14 H22 L16 24 Z"/>';
+    }
+    if (role === 'installation' || role === 'maint' || role === 'service') {
+        return '<path ' + s + ' d="M11 22 V12 L16 8 L21 12 V22 Z M16 12 V22"/>';
+    }
+    if (role === 'unknown') {
+        return '<text x="16" y="20" text-anchor="middle" font-size="14" font-weight="700" fill="' + ink + '">?</text>';
+    }
+    return '<path ' + s + ' d="M10 10 L22 22 M22 10 L10 22"/>';
+}
+
+function natoSvgHtml(side, role, cssColor, angleDeg) {
+    var fill = cssColor || DEFAULT_MARKER_COLOR;
+    var ink = contrastInk(fill);
+    var rotate = angleDeg ? ' transform="rotate(' + angleDeg + ' 16 16)"' : '';
+    var frame = natoFramePath(side);
+    var body;
+    if (side === 'c') {
+        body = '<circle cx="16" cy="16" r="11" fill="' + fill + '" stroke="' + ink + '" stroke-width="1.5"/>';
+    } else {
+        body = '<path d="' + frame + '" fill="' + fill + '" stroke="' + ink + '" stroke-width="1.5"/>';
+    }
+    return '<svg class="arma-marker-svg" viewBox="0 0 32 32" width="32" height="32"' + rotate + '>' +
+        body + natoRoleGlyph(role, ink) + '</svg>';
+}
+
+function locRoleGlyph(locName, ink) {
+    var s = 'stroke="' + ink + '" fill="none" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"';
+    var f = 'fill="' + ink + '"';
+    if (locName === 'transmitter' || locName.indexOf('radio') >= 0) {
+        return '<path ' + s + ' d="M16 24 V12 M12 24 H20"/><path ' + s + ' d="M16 11 L16 7"/><path ' + s +
+            ' d="M11 9 Q16 4 21 9"/><path ' + s + ' d="M9 7 Q16 1 23 7"/>';
+    }
+    if (locName === 'lighthouse' || locName === 'stack') {
+        return '<path ' + s + ' d="M12 24 L14 10 H18 L20 24 Z"/><path ' + s + ' d="M10 10 H22"/>';
+    }
+    if (locName === 'fuelstation') {
+        return '<rect ' + s + ' x="10" y="10" width="8" height="14"/><path ' + s + ' d="M18 14 H22 V22"/>';
+    }
+    if (locName === 'hospital') {
+        return '<path ' + s + ' d="M16 9 V23 M9 16 H23"/>';
+    }
+    if (locName === 'power') {
+        return '<path ' + f + ' d="M18 6 L10 17 H16 L14 26 L22 14 H16 Z"/>';
+    }
+    if (locName === 'church') {
+        return '<path ' + s + ' d="M12 24 V14 L16 9 L20 14 V24 Z M16 9 V6 M14 7 H18"/>';
+    }
+    if (locName === 'bunker') {
+        return '<path ' + s + ' d="M8 20 H24 L20 12 H12 Z"/>';
+    }
+    if (locName === 'quay') {
+        return '<path ' + s + ' d="M8 18 H24 M10 18 V24 M16 18 V24 M22 18 V24"/>';
+    }
+    // Generic location pin / gear-like fallback.
+    return '<circle ' + s + ' cx="16" cy="14" r="5"/><path ' + s + ' d="M16 19 V24"/><circle ' + f + ' cx="16" cy="14" r="1.6"/>';
+}
+
+function locSvgHtml(locName, cssColor, angleDeg) {
+    var fill = cssColor || DEFAULT_MARKER_COLOR;
+    var ink = contrastInk(fill);
+    var rotate = angleDeg ? ' transform="rotate(' + angleDeg + ' 16 16)"' : '';
+    return '<svg class="arma-marker-svg" viewBox="0 0 32 32" width="32" height="32"' + rotate + '>' +
+        '<rect x="4" y="4" width="24" height="24" rx="2" fill="' + fill + '" stroke="' + ink + '" stroke-width="1.5"/>' +
+        locRoleGlyph(locName, ink) + '</svg>';
+}
+
+function worldToLatLng(x, z) {
+    if (missionMapConfig && missionMapConfig.provider === 'ocap' && missionLeafletMap) {
+        var mult = missionMapConfig.multiplier || 1;
+        var img = missionMapConfig.image_size || 0;
+        var nz = missionMapConfig.max_native_zoom || 0;
+        var px = (x || 0) * mult;
+        var py = img - (z || 0) * mult;
+        return missionLeafletMap.unproject([px, py], nz);
+    }
+    return [z, x];
+}
+
+function getCsrfToken() {
+    var input = document.querySelector('[name=csrfmiddlewaretoken]');
+    if (input && input.value) {
+        return input.value;
+    }
+    var match = document.cookie.match(/(?:^|;\s*)csrftoken=([^;]+)/);
+    return match ? decodeURIComponent(match[1]) : '';
+}
+
+function parseOcapSyncResponse(r) {
+    return r.text().then(function(body) {
+        var trimmed = (body || '').trim();
+        if (trimmed.charAt(0) === '{' || trimmed.charAt(0) === '[') {
+            try {
+                return JSON.parse(trimmed);
+            } catch (e) {
+                throw new Error('Réponse JSON invalide');
+            }
+        }
+        var snippet = trimmed.replace(/\s+/g, ' ').slice(0, 160);
+        if (!r.ok) {
+            throw new Error('HTTP ' + r.status + (snippet ? ' : ' + snippet : ''));
+        }
+        throw new Error(
+            'Réponse HTML inattendue (session expirée, CSRF ou mauvaise URL sync). ' +
+            (snippet ? snippet : '')
+        );
+    });
+}
+
+function rotateXZ(x, z, angleDeg) {
+    var rad = angleDeg * Math.PI / 180;
+    var cos = Math.cos(rad);
+    var sin = Math.sin(rad);
+    return [x * cos - z * sin, x * sin + z * cos];
+}
+
+function zoneRotationDeg(marker) {
+    var angle = marker && marker.angle != null ? parseFloat(marker.angle) : 0;
+    if (isNaN(angle)) {
+        angle = 0;
+    }
+    // OCAP : worldToLatLng inverse Z (py = img - z) → +angle aligne avec markerDir Eden.
+    // Arma3Map : repère [z, x] sans flip → CCW(-angle) = CW Arma.
+    if (missionMapConfig && missionMapConfig.provider === 'ocap') {
+        return angle;
+    }
+    return -angle;
+}
+
+function rectangleLatLngs(marker) {
+    var a = marker.a || 50;
+    var b = marker.b || 50;
+    var angle = zoneRotationDeg(marker);
+    var corners = [[-a, -b], [a, -b], [a, b], [-a, b]];
+    return corners.map(function(c) {
+        var rot = rotateXZ(c[0], c[1], angle);
+        return worldToLatLng(marker.x + rot[0], marker.z + rot[1]);
+    });
+}
+
+function ellipseLatLngs(marker, segments) {
+    segments = segments || 48;
+    var a = marker.a || 50;
+    var b = marker.b || 50;
+    var angle = zoneRotationDeg(marker);
+    var points = [];
+    var i;
+    for (i = 0; i < segments; i++) {
+        var t = 2 * Math.PI * i / segments;
+        var lx = a * Math.cos(t);
+        var lz = b * Math.sin(t);
+        var rot = rotateXZ(lx, lz, angle);
+        points.push(worldToLatLng(marker.x + rot[0], marker.z + rot[1]));
+    }
+    return points;
+}
+
+function ensureMapSvgDefs(map) {
+    if (!map.getPane) {
+        return null;
+    }
+    var svg = map.getPanes().overlayPane.querySelector('svg');
+    if (!svg) {
+        var bootstrap = L.polygon([[0, 0], [0, 0.001], [0.001, 0]], {
+            opacity: 0,
+            fillOpacity: 0,
+            interactive: false,
+        }).addTo(map);
+        map.removeLayer(bootstrap);
+        svg = map.getPanes().overlayPane.querySelector('svg');
+    }
+    if (!svg) {
+        return null;
+    }
+    var defs = svg.querySelector('defs');
+    if (!defs) {
+        defs = document.createElementNS('http://www.w3.org/2000/svg', 'defs');
+        svg.insertBefore(defs, svg.firstChild);
+    }
+    return defs;
+}
+
+function ensureBrushPattern(map, brush, cssColor) {
+    var defs = ensureMapSvgDefs(map);
+    if (!defs) {
+        return null;
+    }
+    var safeBrush = (brush || 'solid').toLowerCase().replace(/[^a-z0-9]/g, '');
+    var safeColor = (cssColor || 'ff0000').replace(/[^a-fA-F0-9]/g, '');
+    var id = 'arma-brush-' + safeBrush + '-' + safeColor;
+    if (document.getElementById(id)) {
+        return id;
+    }
+    var pattern = document.createElementNS('http://www.w3.org/2000/svg', 'pattern');
+    pattern.setAttribute('id', id);
+    pattern.setAttribute('patternUnits', 'userSpaceOnUse');
+    pattern.setAttribute('width', '10');
+    pattern.setAttribute('height', '10');
+
+    function addStroke(d, width) {
+        var path = document.createElementNS('http://www.w3.org/2000/svg', 'path');
+        path.setAttribute('d', d);
+        path.setAttribute('stroke', cssColor);
+        path.setAttribute('stroke-width', String(width || 1.1));
+        path.setAttribute('stroke-opacity', '0.55');
+        path.setAttribute('fill', 'none');
+        pattern.appendChild(path);
+    }
+
+    if (safeBrush === 'horizontal') {
+        addStroke('M0 5 H10');
+    } else if (safeBrush === 'vertical') {
+        addStroke('M5 0 V10');
+    } else if (safeBrush === 'grid') {
+        addStroke('M0 5 H10');
+        addStroke('M5 0 V10');
+    } else if (safeBrush === 'fdiagonal') {
+        addStroke('M0 10 L10 0');
+    } else if (safeBrush === 'bdiagonal') {
+        addStroke('M0 0 L10 10');
+    } else if (safeBrush === 'cross') {
+        addStroke('M2 5 H8');
+        addStroke('M5 2 V8');
+    } else {
+        // DiagGrid / Cross-hatch (cadrier in-game).
+        addStroke('M0 0 L10 10');
+        addStroke('M10 0 L0 10');
+    }
+    defs.appendChild(pattern);
+    return id;
+}
+
+function markerZoneStyle(marker, map) {
+    var cssColor = resolveMarkerColorCss(marker.color) || '#FF0000';
+    var brush = (marker.brush || 'Solid').toLowerCase();
+    var borderOnly = brush === 'border' || brush === 'solidborder';
+    var patterned = (
+        brush === 'horizontal' || brush === 'vertical' || brush === 'grid' ||
+        brush === 'fdiagonal' || brush === 'bdiagonal' || brush === 'diaggrid' ||
+        brush === 'cross'
+    );
+    var fillAlpha = brush === 'solidfull' ? 0.72 : 0.32;
+    if (marker.alpha != null && !isNaN(marker.alpha)) {
+        var a = parseFloat(marker.alpha);
+        fillAlpha = brush === 'solidfull'
+            ? Math.min(0.9, Math.max(0.35, a))
+            : Math.min(0.55, Math.max(0.08, a * 0.5));
+    }
+    if (borderOnly) {
+        return {
+            color: cssColor,
+            weight: 2,
+            fillColor: cssColor,
+            fillOpacity: 0,
+            opacity: 0.95,
+        };
+    }
+    if (patterned && map) {
+        var patternId = ensureBrushPattern(map, brush, cssColor);
+        var patternFillOpacity = 0.45;
+        if (marker.alpha != null && !isNaN(marker.alpha)) {
+            patternFillOpacity = Math.min(0.6, Math.max(0.15, parseFloat(marker.alpha) * 0.5));
+        }
+        if (patternId) {
+            return {
+                color: cssColor,
+                weight: 1.5,
+                fillColor: 'url(#' + patternId + ')',
+                fillOpacity: patternFillOpacity,
+                opacity: 0.9,
+            };
+        }
+    }
+    return {
+        color: cssColor,
+        weight: 1.5,
+        fillColor: cssColor,
+        fillOpacity: fillAlpha,
+        opacity: 0.95,
+    };
+}
+
+function isTechnicalMarkerName(name) {
+    var raw = (name || '').trim();
+    if (!raw) {
+        return true;
+    }
+    // Noms Eden auto : marker_12, marker12, Item0, etc.
+    return /^(marker_?\d+|item\d+)$/i.test(raw);
+}
+
+function markerDisplayLabel(marker) {
+    // Etiquette permanente : uniquement le texte editeur, pas le name technique.
+    var text = (marker.text || '').trim();
+    if (!text || isTechnicalMarkerName(text)) {
+        return '';
+    }
+    return text;
+}
+
+function addMarkerToMap(map, marker, iconBase) {
+    var latLng = worldToLatLng(marker.x, marker.z);
+    var label = markerDisplayLabel(marker);
+    var type = normalizeMarkerType(marker.type);
+    var layer;
+    var boundsPoints = [latLng];
+
+    if (type === 'rectangle') {
+        boundsPoints = rectangleLatLngs(marker);
+        layer = L.polygon(boundsPoints, markerZoneStyle(marker, map)).addTo(map);
+    } else if (type === 'ellipse') {
+        boundsPoints = ellipseLatLngs(marker);
+        layer = L.polygon(boundsPoints, markerZoneStyle(marker, map)).addTo(map);
+    } else {
+        var icon = getArmaMarkerIcon(resolveIconType(marker), marker.color, iconBase, marker.angle);
+        layer = L.marker(latLng, { icon: icon }).addTo(map);
+    }
+
+    var markerName = (marker.name || '').trim();
+    if (markerName) {
+        missionMarkerLayersByName[markerName.toLowerCase()] = {
+            layer: layer,
+            latLng: latLng,
+            marker: marker,
+        };
+    }
+
+    if (label) {
+        if (layer.bindTooltip) {
+            if (type === 'rectangle' || type === 'ellipse') {
+                layer.bindTooltip(label, {
+                    sticky: true,
+                    className: 'arma-marker-label',
+                });
+            } else {
+                layer.bindTooltip(label, {
+                    permanent: true,
+                    direction: 'right',
+                    offset: [8, 0],
+                    className: 'arma-marker-label',
+                });
+            }
+        }
+        if (layer.bindPopup) {
+            layer.bindPopup(label);
+        }
+    }
+    return boundsPoints;
+}
+
+function activateMissionMapTab() {
+    if (typeof window.activateMissionTabById === 'function') {
+        return window.activateMissionTabById('tab-carte');
+    }
+    var carteBtn = document.getElementById('tab-carte');
+    if (!carteBtn) {
+        return false;
+    }
+    carteBtn.dispatchEvent(new MouseEvent('mousedown', { bubbles: true, cancelable: true }));
+    return true;
+}
+
+function focusMissionMapMarker(markerName) {
+    var key = (markerName || '').trim().toLowerCase();
+    if (!key) {
+        return;
+    }
+    if (!activateMissionMapTab()) {
+        return;
+    }
+    var attempts = 0;
+    function tryFocus() {
+        attempts += 1;
+        if (!missionLeafletMap) {
+            if (attempts < 40) {
+                setTimeout(tryFocus, 100);
+            }
+            return;
+        }
+        var entry = missionMarkerLayersByName[key];
+        var latLng = entry && entry.latLng;
+        if (!latLng && BRIEFING_MARKER_TARGETS[key]) {
+            var t = BRIEFING_MARKER_TARGETS[key];
+            latLng = worldToLatLng(t.x, t.z);
+        }
+        if (!latLng) {
+            return;
+        }
+        var zoom = Math.max(missionLeafletMap.getZoom(), (missionMapDefaultZoom || 3) + 2);
+        missionLeafletMap.setView(latLng, zoom, { animate: true });
+        if (entry && entry.layer) {
+            if (entry.layer.openTooltip) {
+                try { entry.layer.openTooltip(); } catch (e) { /* ignore */ }
+            }
+            if (entry.layer.openPopup) {
+                try { entry.layer.openPopup(); } catch (e) { /* ignore */ }
+            }
+        }
+    }
+    setTimeout(tryFocus, 60);
+}
+
+function setupBriefingMarkerLinks() {
+    document.addEventListener('click', function(e) {
+        var target = e.target;
+        if (!target || !target.closest) {
+            return;
+        }
+        var link = target.closest('a.briefing-marker-link');
+        if (!link) {
+            return;
+        }
+        e.preventDefault();
+        focusMissionMapMarker(link.getAttribute('data-marker-name'));
+    });
+}
+
+function getArmaMarkerIcon(markerType, colorValue, iconBase, angleDeg) {
+    var kind = markerIconKind(markerType);
+    var size = MARKER_ICON_SIZES[kind] || 28;
+    var cssColor = resolveMarkerDisplayColor(markerType, colorValue);
+    var angle = (angleDeg != null && !isNaN(angleDeg)) ? parseFloat(angleDeg) : 0;
+    var rotate = angle ? 'transform:rotate(' + angle + 'deg);transform-origin:center center;' : '';
+    var shadow = markerVisibilityFilter(cssColor);
+    var half = Math.round(size / 2);
+
+    function tintedMaskHtml(url) {
+        return '<div class="arma-marker-tint" style="width:' + size + 'px;height:' + size + 'px;' +
+            'background-color:' + cssColor + ';' +
+            '-webkit-mask-image:url(\'' + url + '\');mask-image:url(\'' + url + '\');' +
+            '-webkit-mask-source-type:alpha;mask-mode:alpha;' +
+            '-webkit-mask-size:contain;mask-size:contain;' +
+            '-webkit-mask-repeat:no-repeat;mask-repeat:no-repeat;' +
+            '-webkit-mask-position:center;mask-position:center;' +
+            shadow + rotate + '"></div>';
+    }
+
+    function plainImgHtml(url) {
+        return '<img src="' + url + '" alt="" class="arma-marker-img" style="width:' + size +
+            'px;height:' + size + 'px;' + shadow + rotate + '" />';
+    }
+
+    function asDivIcon(html) {
+        return L.divIcon({
+            html: html,
+            className: 'arma-marker-divicon arma-marker-divicon--' + kind,
+            iconSize: [size, size],
+            iconAnchor: [half, half],
+            popupAnchor: [0, -half],
+        });
+    }
+
+    // Flags : couleurs natives du PNG.
+    if (markerTypeIsFlag(markerType) && markerHasPngIcon(markerType)) {
+        return asDivIcon(plainImgHtml(iconBase + '/' + resolveMarkerIconFile(markerType)));
+    }
+
+    // NATO / loc / mil / hd : teinte mask alpha (PNG OCAP = silhouette a colorier).
+    if (markerHasPngIcon(markerType)) {
+        return asDivIcon(tintedMaskHtml(iconBase + '/' + resolveMarkerIconFile(markerType)));
+    }
+
+    // Fallback SVG si type absent du pack OCAP2.
+    var nato = parseNatoMarkerType(markerType);
+    if (nato) {
+        return asDivIcon(natoSvgHtml(nato.side, nato.role, cssColor, angle));
+    }
+    var locName = parseLocMarkerType(markerType);
+    if (locName) {
+        return asDivIcon(locSvgHtml(locName, cssColor, angle));
+    }
+    return asDivIcon(tintedMaskHtml(iconBase + '/' + resolveMarkerIconFile(markerType)));
+}
+
+function fitMissionMapToContent() {
+    if (!missionLeafletMap) {
+        return;
+    }
+    missionLeafletMap.invalidateSize({ animate: false });
+    if (missionMapBounds && missionMapBounds.length > 1) {
+        try {
+            missionLeafletMap.fitBounds(missionMapBounds, { padding: [40, 40] });
+        } catch (e) {
+            /* ignore */
+        }
+    } else if (missionMapBounds && missionMapBounds.length === 1) {
+        missionLeafletMap.setView(missionMapBounds[0], missionMapDefaultZoom);
+    }
+}
+
+function resizeMissionMap() {
+    fitMissionMapToContent();
+}
+
+function waitForVisibleMapSize(mapEl, attempts) {
+    attempts = attempts == null ? 20 : attempts;
+    return new Promise(function(resolve) {
+        function check() {
+            var w = mapEl.offsetWidth;
+            var h = mapEl.offsetHeight;
+            if (w > 100 && h > 100) {
+                resolve({ w: w, h: h });
+                return;
+            }
+            if (attempts <= 0) {
+                // Force une hauteur minimale si le layout n'a pas encore peaufiné.
+                mapEl.style.minHeight = '560px';
+                mapEl.style.height = '560px';
+                resolve({ w: mapEl.offsetWidth || 800, h: 560 });
+                return;
+            }
+            attempts -= 1;
+            requestAnimationFrame(check);
+        }
+        requestAnimationFrame(check);
+    });
+}
+
+function loadScript(src) {
+    return new Promise(function(resolve, reject) {
+        var existing = document.querySelector('script[src="' + src + '"]');
+        if (existing) {
+            resolve();
+            return;
+        }
+        var s = document.createElement('script');
+        s.src = src;
+        s.onload = resolve;
+        s.onerror = reject;
+        document.head.appendChild(s);
+    });
+}
+
+function loadStylesheet(href) {
+    if (document.querySelector('link[href="' + href + '"]')) {
+        return;
+    }
+    var l = document.createElement('link');
+    l.rel = 'stylesheet';
+    l.href = href;
+    document.head.appendChild(l);
+}
+
+function setMissionMapStatus(message, isError, isSyncing) {
+    var statusEl = document.getElementById('mission-map-status');
+    var mapTab = document.getElementById('tab-content-carte');
+    var mapEl = document.getElementById('mission-map');
+    if (!statusEl) {
+        statusEl = document.createElement('div');
+        statusEl.id = 'mission-map-status';
+        statusEl.style.cssText = 'font-size:0.95em;padding:8px 12px;';
+        if (mapTab && mapEl) {
+            mapTab.insertBefore(statusEl, mapEl);
+        } else if (mapTab) {
+            mapTab.insertBefore(statusEl, mapTab.firstChild);
+        } else {
+            return;
+        }
+    }
+    statusEl.textContent = message || '';
+    statusEl.style.color = isError ? '#c62828' : '#555';
+    statusEl.style.display = message ? '' : 'none';
+    statusEl.classList.toggle('mission-map-sync-panel', !!isSyncing && !isError);
+    statusEl.classList.toggle('is-error', !!isError);
+}
+
+function clearMissionMapStatus() {
+    var statusEl = document.getElementById('mission-map-status');
+    if (statusEl) {
+        statusEl.textContent = '';
+        statusEl.style.display = 'none';
+        statusEl.classList.remove('mission-map-sync-panel', 'is-error');
+    }
+}
+
+function setMissionMapVisible(visible) {
+    var mapEl = document.getElementById('mission-map');
+    if (mapEl) {
+        mapEl.classList.toggle('mission-map-hidden', !visible);
+        mapEl.setAttribute('aria-hidden', visible ? 'false' : 'true');
+    }
+}
+
+function ocapMapDisplayName(config) {
+    return (config && (config.display_name || config.world_name)) || 'cette carte';
+}
+
+function ocapSyncStatusMessage(config, data) {
+    var label = ocapMapDisplayName(config);
+    var status = data && data.status;
+    if (status === 'queued') {
+        return 'La carte « ' + label + ' » n\'est pas encore disponible sur le miroir. Mise en file de synchronisation…';
+    }
+    return 'La carte « ' + label + ' » n\'est pas encore disponible sur le miroir. Synchronisation en cours…';
+}
+
+function buildOcapCrs(config) {
+    var factor = config.multiplier || 1;
+    return L.extend({}, L.CRS.Simple, {
+        projection: L.Projection.LonLat,
+        transformation: new L.Transformation(factor, 0, -factor, 0),
+        scale: function(zoom) { return Math.pow(2, zoom); },
+        zoom: function(scale) { return Math.log(scale) / Math.LN2; },
+        distance: function(a, b) {
+            var dx = b.lng - a.lng;
+            var dy = b.lat - a.lat;
+            return Math.sqrt(dx * dx + dy * dy);
+        },
+        infinite: true,
+    });
+}
+
+function switchOcapTileLayer(urlTemplate, attribution) {
+    if (!missionLeafletMap || !urlTemplate) {
+        return;
+    }
+    if (missionMapTileLayer) {
+        missionLeafletMap.removeLayer(missionMapTileLayer);
+    }
+    var img = missionMapConfig.image_size || 0;
+    var nz = missionMapConfig.max_native_zoom || 0;
+    var mapBounds = L.latLngBounds(
+        missionLeafletMap.unproject([0, img], nz),
+        missionLeafletMap.unproject([img, 0], nz)
+    );
+    missionMapTileLayer = L.tileLayer(urlTemplate, {
+        attribution: attribution ? ('Map Data © ' + attribution) : 'OCAP2',
+        maxNativeZoom: nz,
+        minNativeZoom: 0,
+        bounds: mapBounds,
+        noWrap: true,
+        tms: false,
+        errorTileUrl: '',
+    });
+    missionMapTileLayer.addTo(missionLeafletMap);
+    return missionMapTileLayer;
+}
+
+function ocapMirrorReady(data) {
+    if (!data) {
+        return false;
+    }
+    if (data.local_ready === true) {
+        return true;
+    }
+    return data.status === 'ready';
+}
+
+function renderOcapMissionMap(mapEl, config, markers, tileUrl) {
+    var iconBase = config.markers_icon_base;
+    var crs = buildOcapCrs(config);
+    missionMapDefaultZoom = config.default_zoom != null ? config.default_zoom : 2;
+    missionLeafletMap = L.map(mapEl, {
+        minZoom: config.min_zoom != null ? config.min_zoom : 0,
+        maxZoom: config.max_zoom != null ? config.max_zoom : 7,
+        crs: crs,
+        renderer: L.svg({ padding: 0.5 }),
+        zoomSnap: 1,
+        zoomDelta: 1,
+    });
+    switchOcapTileLayer(tileUrl, config.attribution);
+    var half = (config.world_size || config.image_size || 0) / 2;
+    var center = worldToLatLng(half, half);
+    missionLeafletMap.setView(center, missionMapDefaultZoom);
+    missionMapSyncPending = false;
+    missionMapInitialized = true;
+    populateMissionMarkers(missionLeafletMap, markers, iconBase);
+    setTimeout(function() {
+        if (missionLeafletMap) {
+            missionLeafletMap.invalidateSize();
+        }
+        fitMissionMapToContent();
+    }, 0);
+}
+
+function finishOcapMapAfterSync(config, data) {
+    if (!missionMapPendingOcap) {
+        return;
+    }
+    var pending = missionMapPendingOcap;
+    var tileUrl = (data && data.tile_url_local) || config.tile_url_local;
+    if (!tileUrl) {
+        missionMapSyncPending = false;
+        missionMapPendingOcap = null;
+        setMissionMapStatus('Carte synchronisée mais URL des tuiles indisponible.', true);
+        missionMapOcapSyncStarted = false;
+        return;
+    }
+    config.local_ready = true;
+    config.tile_url_local = tileUrl;
+    setMissionMapVisible(true);
+    clearMissionMapStatus();
+    return waitForVisibleMapSize(pending.mapEl).then(function() {
+        renderOcapMissionMap(pending.mapEl, config, pending.markers, tileUrl);
+        missionMapPendingOcap = null;
+        missionMapOcapSyncStarted = false;
+    });
+}
+
+function beginOcapSyncWait(mapEl, config, markers) {
+    if (missionMapOcapSyncStarted || missionMapSyncPending) {
+        return;
+    }
+    missionMapSyncPending = true;
+    missionMapPendingOcap = { mapEl: mapEl, config: config, markers: markers };
+    setMissionMapVisible(false);
+    setMissionMapStatus(ocapSyncStatusMessage(config), false, true);
+    requestOcapMapSync(config);
+}
+
+function applyOcapMirrorLayer(config, data) {
+    if (missionMapPendingOcap && !missionMapInitialized) {
+        finishOcapMapAfterSync(config, data);
+        return;
+    }
+    var url = (data && data.tile_url_local) || config.tile_url_local;
+    if (url && missionLeafletMap) {
+        switchOcapTileLayer(url, config.attribution);
+    }
+    clearMissionMapStatus();
+    missionMapOcapSyncStarted = false;
+}
+
+function failOcapMapSync(message) {
+    missionMapSyncPending = false;
+    missionMapPendingOcap = null;
+    missionMapOcapSyncStarted = false;
+    missionMapOcapMissingPolls = 0;
+    setMissionMapVisible(false);
+    setMissionMapStatus(message, true);
+}
+function requestOcapMapSync(config) {
+    if (!config || !config.sync_url || !config.world_name) {
+        return;
+    }
+    if (missionMapOcapSyncStarted) {
+        return;
+    }
+    // Miroir déjà prêt côté serveur : pas de sync ni polling.
+    if (config.local_ready && config.tile_url_local) {
+        applyOcapMirrorLayer(config, null);
+        return;
+    }
+    missionMapOcapSyncStarted = true;
+    missionMapOcapMissingPolls = 0;
+    if (!missionMapSyncPending) {
+        setMissionMapVisible(false);
+    }
+    setMissionMapStatus(ocapSyncStatusMessage(config), false, true);
+    fetch(config.sync_url, {
+        method: 'POST',
+        headers: {
+            'Content-Type': 'application/json',
+            'X-CSRFToken': getCsrfToken(),
+        },
+        credentials: 'same-origin',
+        body: JSON.stringify({ world: config.world_name }),
+    })
+        .then(parseOcapSyncResponse)
+        .then(function(data) {
+            if (ocapMirrorReady(data)) {
+                applyOcapMirrorLayer(config, data);
+                return;
+            }
+            if (data && data.status === 'error') {
+                failOcapMapSync(
+                    'Échec de synchronisation : ' + (data.error || 'erreur maps-cdn')
+                );
+                return;
+            }
+            if (data && (data.status === 'queued' || data.syncing)) {
+                missionMapOcapMissingPolls = 0;
+            }
+            setMissionMapStatus(ocapSyncStatusMessage(config, data), false, true);
+            pollOcapMapSync(config, 0);
+        })
+        .catch(function(err) {
+            failOcapMapSync(
+                'Impossible de lancer la synchronisation : ' + (err && err.message ? err.message : 'erreur réseau')
+            );
+        });
+}
+
+function pollOcapMapSync(config, attempt) {
+    var statusUrl = config.status_url || config.sync_url;
+    if (!statusUrl || attempt > 90) {
+        failOcapMapSync('Échec de synchronisation de la carte (délai dépassé).');
+        return;
+    }
+    var url = statusUrl;
+    if (url.indexOf('world=') === -1) {
+        url += (url.indexOf('?') >= 0 ? '&' : '?') + 'world=' + encodeURIComponent(config.world_name);
+    }
+    setTimeout(function() {
+        fetch(url, { credentials: 'same-origin' })
+            .then(parseOcapSyncResponse)
+            .then(function(data) {
+                if (data && data.status === 'error') {
+                    failOcapMapSync(
+                        'Échec de synchronisation : ' + (data.error || 'erreur maps-cdn')
+                    );
+                    return;
+                }
+                if (ocapMirrorReady(data)) {
+                    applyOcapMirrorLayer(config, data);
+                    return;
+                }
+                if (data && data.status === 'missing' && !data.syncing) {
+                    missionMapOcapMissingPolls += 1;
+                    if (missionMapOcapMissingPolls >= 3 && attempt >= 2) {
+                        failOcapMapSync(
+                            'La synchronisation ne démarre pas. Vérifiez maps-cdn et le secret OCAP_MAPS_CDN_SECRET.'
+                        );
+                        return;
+                    }
+                } else if (data && (data.status === 'queued' || data.syncing)) {
+                    missionMapOcapMissingPolls = 0;
+                }
+                setMissionMapStatus(ocapSyncStatusMessage(config, data), false, true);
+                pollOcapMapSync(config, attempt + 1);
+            })
+            .catch(function(err) {
+                if (attempt >= 5) {
+                    failOcapMapSync(
+                        'Impossible de suivre la synchronisation : ' + (err && err.message ? err.message : 'erreur réseau')
+                    );
+                    return;
+                }
+                pollOcapMapSync(config, attempt + 1);
+            });
+    }, 4000);
+}
+
+function populateMissionMarkers(map, markers, iconBase) {
+    var bounds = [];
+    missionMarkerLayersByName = {};
+    markers.forEach(function(m) {
+        var pts = addMarkerToMap(map, m, iconBase);
+        pts.forEach(function(p) { bounds.push(p); });
+    });
+    missionMapBounds = bounds;
+    addMissionMapLabelsControl(map);
+    setTimeout(fitMissionMapToContent, 0);
+    setTimeout(fitMissionMapToContent, 100);
+    setTimeout(fitMissionMapToContent, 350);
+}
+
+function initOcapMissionMap(mapEl, config, markers) {
+    if (!config.local_ready && config.sync_url) {
+        beginOcapSyncWait(mapEl, config, markers);
+        return;
+    }
+    var tileUrl = config.tile_url_local || config.tile_url_remote;
+    if (!tileUrl) {
+        setMissionMapStatus('Carte non disponible pour « ' + ocapMapDisplayName(config) + ' ».', true);
+        return;
+    }
+    setMissionMapVisible(true);
+    clearMissionMapStatus();
+    renderOcapMissionMap(mapEl, config, markers, tileUrl);
+}
+
+function initArma3MissionMap(mapEl, config, markers) {
+    return loadScript(config.utils_js_url)
+        .then(function() { return loadScript(config.map_js_url); })
+        .then(function() { return waitForVisibleMapSize(mapEl); })
+        .then(function() {
+            var mapKey = config.map_key;
+            var mapInfos = window.Arma3Map && window.Arma3Map.Maps && window.Arma3Map.Maps[mapKey];
+            if (!mapInfos) {
+                setMissionMapStatus('Configuration Arma3Map introuvable pour « ' + mapKey + ' ».', true);
+                return;
+            }
+            clearMissionMapStatus();
+            missionMapInitialized = true;
+            missionMapDefaultZoom = mapInfos.defaultZoom || 3;
+            var iconBase = config.markers_icon_base;
+            missionLeafletMap = L.map(mapEl, {
+                minZoom: mapInfos.minZoom,
+                maxZoom: mapInfos.maxZoom,
+                crs: mapInfos.CRS,
+                renderer: L.svg({ padding: 0.5 }),
+            });
+            L.tileLayer(config.cdn_base + mapInfos.tilePattern, {
+                attribution: mapInfos.attribution,
+                tileSize: mapInfos.tileSize,
+            }).addTo(missionLeafletMap);
+            missionLeafletMap.setView(mapInfos.center, missionMapDefaultZoom);
+            if (typeof L.latlngGraticule === 'function') {
+                L.latlngGraticule().addTo(missionLeafletMap);
+            }
+            populateMissionMarkers(missionLeafletMap, markers, iconBase);
+        });
+}
+
+function initMissionMap() {
+    if (missionMapInitialized) {
+        setTimeout(fitMissionMapToContent, 50);
+        setTimeout(fitMissionMapToContent, 250);
+        return;
+    }
+    if (missionMapSyncPending) {
+        return;
+    }
+    var mapEl = document.getElementById('mission-map');
+    var configEl = document.getElementById('mission-map-config-data')
+        || document.getElementById('arma3map-config-data');
+    var markersEl = document.getElementById('mission-markers-data');
+    if (!mapEl) {
+        return;
+    }
+    if (!configEl || !markersEl) {
+        setMissionMapStatus('Données carte indisponibles (config ou marqueurs).', true);
+        return;
+    }
+    var config;
+    var markers;
+    try {
+        config = JSON.parse(configEl.textContent);
+        markers = JSON.parse(markersEl.textContent);
+    } catch (e) {
+        setMissionMapStatus('Erreur de lecture des données carte.', true);
+        return;
+    }
+    if (!config) {
+        setMissionMapStatus('Carte non supportée pour cette mission.', true);
+        return;
+    }
+    if (!markers.length) {
+        setMissionMapStatus('Aucun marqueur à afficher.', true);
+        return;
+    }
+
+    missionMapConfig = config;
+    if (!(config.provider === 'ocap' && !config.local_ready && config.sync_url)) {
+        setMissionMapStatus('Chargement de Leaflet et de la carte…');
+    }
+    loadStylesheet(config.leaflet_css_url);
+    if (config.css_url) {
+        loadStylesheet(config.css_url);
+    }
+
+    var chain = loadScript(config.leaflet_js_url).then(function() {
+        return waitForVisibleMapSize(mapEl);
+    });
+    if (config.provider === 'ocap') {
+        chain = chain.then(function() {
+            initOcapMissionMap(mapEl, config, markers);
+        });
+    } else {
+        chain = chain.then(function() {
+            return initArma3MissionMap(mapEl, config, markers);
+        });
+    }
+    chain.catch(function(err) {
+        setMissionMapStatus('Erreur lors du chargement de la carte (scripts ou tuiles).', true);
+        if (window.console && console.error) {
+            console.error('initMissionMap', err);
+        }
+    });
+}
+
 function setupTabs() {
     var tabs = [
         { btn: document.getElementById('tab-briefing'), content: document.getElementById('tab-content-briefing') },
+        { btn: document.getElementById('tab-carte'), content: document.getElementById('tab-content-carte'), onActivate: function() {
+            initMissionMap();
+            setTimeout(fitMissionMapToContent, 50);
+            setTimeout(fitMissionMapToContent, 300);
+        } },
         { btn: document.getElementById('tab-sessions'), content: document.getElementById('tab-content-sessions') },
-        { btn: document.getElementById('tab-stats'), content: document.getElementById('tab-content-stats') }
-    ];
-    if (!tabs.every(function(t) { return t.btn && t.content; })) return;
+        { btn: document.getElementById('tab-stats'), content: document.getElementById('tab-content-stats') },
+    ].filter(function(t) { return t.btn && t.content; });
+    if (!tabs.length) return;
     function activate(active) {
         tabs.forEach(function(t) {
             var on = t === active;
@@ -294,17 +1640,41 @@ function setupTabs() {
             t.content.style.display = on ? '' : 'none';
         });
     }
+    window.activateMissionTabById = function(btnId) {
+        var found = null;
+        for (var i = 0; i < tabs.length; i++) {
+            if (tabs[i].btn && tabs[i].btn.id === btnId) {
+                found = tabs[i];
+                break;
+            }
+        }
+        if (!found) {
+            return false;
+        }
+        activate(found);
+        if (found.onActivate) {
+            found.onActivate();
+        }
+        return true;
+    };
     tabs.forEach(function(t) {
         t.btn.addEventListener('mousedown', function(e) {
             e.preventDefault();
             activate(t);
+            if (t.onActivate) {
+                t.onActivate();
+            }
         });
     });
 }
 if (document.readyState === 'loading') {
-    document.addEventListener('DOMContentLoaded', setupTabs);
+    document.addEventListener('DOMContentLoaded', function() {
+        setupTabs();
+        setupBriefingMarkerLinks();
+    });
 } else {
     setupTabs();
+    setupBriefingMarkerLinks();
 }
 </script>
 {% endblock %}

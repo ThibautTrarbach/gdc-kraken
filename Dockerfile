@@ -9,7 +9,12 @@ WORKDIR /app
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
-COPY . .
+# Copie explicite du code applicatif uniquement.
+# Ne pas utiliser COPY . . : risque d'inclure ocap_maps/, missions/, staticfiles/, etc.
+COPY manage.py .
+COPY gdc_kraken ./gdc_kraken
+COPY gdc_storm ./gdc_storm
+COPY docker ./docker
 
 RUN mkdir -p /app/missions /app/staticfiles /data/missions_pbo /data/persist \
     && sed -i 's/\r$//' /app/docker/entrypoint.sh \

@@ -79,6 +79,13 @@ if USE_X_FORWARDED_PROTO:
     SESSION_COOKIE_SECURE = True
     CSRF_COOKIE_SECURE = True
 
+# COOP/COEP ne s'appliquent que sur origines « trustworthy » (HTTPS, localhost).
+# Désactivé par défaut pour accès HTTP direct (ex. IP:6140) ; activer derrière HTTPS prod.
+if _env_bool("ENABLE_COOP", False):
+    SECURE_CROSS_ORIGIN_OPENER_POLICY = "same-origin"
+else:
+    SECURE_CROSS_ORIGIN_OPENER_POLICY = None
+
 
 # Application definition
 
@@ -193,18 +200,10 @@ USE_TZ = True
 # https://docs.djangoproject.com/en/5.2/howto/static-files/
 
 STATIC_URL = os.environ.get("STATIC_URL", "/static/")
-STATICFILES_DIRS = [
-    BASE_DIR / 'gdc_storm' / 'static',
-]
+# Ne pas remettre gdc_storm/static ici : AppDirectoriesFinder le trouve déjà
+# via l'app installée (sinon doublons collectstatic).
+STATICFILES_DIRS = []
 STATIC_ROOT = Path(os.environ.get("STATIC_ROOT", BASE_DIR / "staticfiles"))
-STORAGES = {
-    'default': {
-        'BACKEND': 'django.core.files.storage.FileSystemStorage',
-    },
-    'staticfiles': {
-        'BACKEND': 'whitenoise.storage.CompressedStaticFilesStorage',
-    },
-}
 
 
 # Default primary key field type
@@ -269,6 +268,10 @@ MISSIONS_IMAGES_STORAGE_PATH = os.environ.get(
     'MISSIONS_IMAGES_STORAGE_PATH',
     (Path('missions') / 'images').as_posix(),
 )
+MISSIONS_MARKERS_STORAGE_PATH = os.environ.get(
+    'MISSIONS_MARKERS_STORAGE_PATH',
+    (Path('missions') / 'markers').as_posix(),
+)
 
 # Chemin personnalisé pour le stockage des missions (env prioritaire, sinon config.json)
 MISSIONS_PBO_STORAGE_PATH = str(Path(_env(
@@ -276,9 +279,42 @@ MISSIONS_PBO_STORAGE_PATH = str(Path(_env(
     str(BASE_DIR / "missions_pbo"),
 )))
 
+# Fonds de carte OCAP2 (catalogue online + packs locaux)
+OCAP_WORLDS_URL = _env('OCAP_WORLDS_URL', 'https://maps.ocap2.com/worlds.json')
+OCAP_ARCHIVES_LIST_URL = _env('OCAP_ARCHIVES_LIST_URL', 'https://archives.ocap2.com/list')
+# Hotlink navigateur (CDN officiel OCAP2).
+OCAP_TILES_BASE_URL = _env('OCAP_TILES_BASE_URL', 'https://maps.ocap2.com')
+# Miroir dédié (conteneur ocap-maps-cdn, éventuellement autre serveur).
+OCAP_MAPS_CDN_URL = _env('OCAP_MAPS_CDN_URL', '').rstrip('/')
+OCAP_MAPS_CDN_SECRET = _env('OCAP_MAPS_CDN_SECRET', '')
+_OCAP_MAPS_DEFAULT = (
+    '/data/ocap_maps'
+    if PLATFORM in ('DOCKER', 'PROD')
+    else str(BASE_DIR / 'ocap_maps')
+)
+OCAP_MAPS_STORAGE_PATH = str(Path(_env('OCAP_MAPS_STORAGE_PATH', _OCAP_MAPS_DEFAULT)))
+
 # Fichiers médias (missions, loadScreen)
-MEDIA_ROOT = Path(os.environ.get("MEDIA_ROOT", BASE_DIR / "missions"))
-MEDIA_URL = os.environ.get("MEDIA_URL", "/media/")
+_MEDIA_ROOT_DEFAULT = (
+    '/data/persist/missions'
+    if PLATFORM in ('DOCKER', 'PROD')
+    else str(BASE_DIR / 'missions')
+)
+MEDIA_ROOT = Path(os.environ.get('MEDIA_ROOT', _MEDIA_ROOT_DEFAULT))
+MEDIA_URL = os.environ.get('MEDIA_URL', '/media/')
+
+STORAGES = {
+    'default': {
+        'BACKEND': 'django.core.files.storage.FileSystemStorage',
+        'OPTIONS': {
+            'location': str(MEDIA_ROOT),
+            'base_url': MEDIA_URL,
+        },
+    },
+    'staticfiles': {
+        'BACKEND': 'whitenoise.storage.CompressedStaticFilesStorage',
+    },
+}
 # Servir /media/ via Django (nécessaire en Docker sans nginx). Désactiver en PROD si reverse-proxy.
 if "SERVE_MEDIA" in os.environ or "SERVE_MEDIA" in config_data:
     SERVE_MEDIA = _env_bool("SERVE_MEDIA")

@@ -50,6 +50,10 @@ class Mission(models.Model):
     loadScreen = models.ImageField(upload_to='missions/', blank=True, null=True, verbose_name="loadScreen (image écran de chargement)")
     briefing = JSONField(blank=True, null=True, default=list, verbose_name="Briefing (éléments extraits du fichier briefing.sqf)")
     briefing_images = models.JSONField(default=list, blank=True)
+    markers_file = models.CharField(
+        max_length=512, blank=True, default='',
+        verbose_name='Chemin fichier marqueurs (JSON)',
+    )
     status = models.CharField(
         max_length=20,
         choices=STATUS_CHOICES,

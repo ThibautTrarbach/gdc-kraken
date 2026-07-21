@@ -524,3 +524,109 @@ tr:last-child td {
         grid-template-columns: 1fr;
     }
 }
+
+.missions-container .mission-map-canvas {
+    width: 100%;
+    height: min(78vh, 920px);
+    min-height: 560px;
+    border-radius: 8px;
+    border: 1px solid #ddd;
+    background: #e8e8e8;
+}
+.missions-container .mission-map-canvas.leaflet-container {
+    height: min(78vh, 920px) !important;
+    min-height: 560px !important;
+}
+.arma-marker-divicon {
+    background: transparent !important;
+    border: none !important;
+}
+.arma-marker-divicon .arma-marker-tint,
+.arma-marker-divicon .arma-marker-img,
+.arma-marker-divicon .arma-marker-svg {
+    display: block;
+    max-width: 100%;
+    max-height: 100%;
+}
+.arma-marker-divicon .arma-marker-tint {
+    /* OCAP PNGs : mask sur canal alpha (pas luminance) pour colorier les silhouettes sombres. */
+    -webkit-mask-source-type: alpha;
+    mask-mode: alpha;
+    -webkit-mask-size: contain;
+    mask-size: contain;
+    -webkit-mask-repeat: no-repeat;
+    mask-repeat: no-repeat;
+    -webkit-mask-position: center;
+    mask-position: center;
+}
+.arma-marker-divicon .arma-marker-img,
+.arma-marker-divicon .arma-marker-svg {
+    object-fit: contain;
+    overflow: visible;
+}
+.leaflet-tooltip.arma-marker-label {
+    background: rgba(255, 255, 255, 0.92);
+    border: none;
+    border-radius: 4px;
+    box-shadow: 0 1px 3px rgba(0, 0, 0, 0.22);
+    color: #1a1a1a;
+    font-size: 11px;
+    font-weight: 600;
+    letter-spacing: 0.01em;
+    line-height: 1.25;
+    padding: 2px 7px;
+    white-space: nowrap;
+}
+.leaflet-tooltip.arma-marker-label::before {
+    display: none;
+}
+/* Masquer toutes les bulles d'etiquettes (permanent + sticky au survol). */
+#mission-map.mission-map-labels-off .leaflet-tooltip-pane,
+#mission-map.mission-map-labels-off .leaflet-tooltip.arma-marker-label {
+    display: none !important;
+    visibility: hidden !important;
+    opacity: 0 !important;
+    pointer-events: none !important;
+}
+.mission-map-labels-control.leaflet-bar {
+    border: 2px solid rgba(0, 0, 0, 0.2);
+    background: #fff;
+}
+.mission-map-labels-control a.mission-map-labels-btn {
+    display: flex !important;
+    align-items: center;
+    justify-content: center;
+    width: 30px;
+    height: 30px;
+    line-height: 30px;
+    color: #464646;
+    background: #fff;
+    text-decoration: none;
+    transition: color 0.12s ease, background 0.12s ease;
+}
+.mission-map-labels-control a.mission-map-labels-btn:hover {
+    background: #f4f4f4;
+    color: #111;
+}
+.mission-map-labels-control a.mission-map-labels-btn .mission-map-eye-icon {
+    display: block;
+    flex-shrink: 0;
+    pointer-events: none;
+}
+.mission-map-labels-control a.mission-map-labels-btn.is-off {
+    color: #8a8a8a;
+    background: #fff;
+}
+.mission-map-labels-control a.mission-map-labels-btn.is-off:hover {
+    color: #555;
+    background: #f4f4f4;
+}
+.briefing-marker-link {
+    color: #1565c0;
+    font-weight: 700;
+    text-decoration: underline;
+    cursor: pointer;
+}
+.briefing-marker-link:hover {
+    color: #0d47a1;
+}

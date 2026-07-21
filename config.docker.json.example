@@ -1,5 +1,6 @@
 {
   "SECRET_KEY": "change-me-long-random",
   "PLATFORM": "DOCKER",
-  "MISSIONS_PBO_STORAGE_PATH": "/data/missions_pbo"
+  "MISSIONS_PBO_STORAGE_PATH": "/data/missions_pbo",
+  "OCAP_MAPS_STORAGE_PATH": "/data/ocap_maps"
 }
