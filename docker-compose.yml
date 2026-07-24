@@ -24,7 +24,7 @@ services:
     restart: unless-stopped
 
   storm:
-    image: ${STORM_IMAGE:-thibautblack/gdc-storm:latest}
+    image: ${STORM_IMAGE:-ghcr.io/gdc-framework/storm_v3:latest}
     ports:
       # Localhost only : Traefik joignit storm via le réseau Docker (pas ce port).
       # Évite l'accès public direct tout en gardant le debug local + X-Forwarded-*.
@@ -56,7 +56,7 @@ services:
 
   # Miroir / sync tuiles OCAP (peut aussi tourner seul via docker-compose.maps.yml).
   ocap-maps-cdn:
-    image: ${MAPS_CDN_IMAGE:-thibautblack/gdc-storm:maps-cdn}
+    image: ${MAPS_CDN_IMAGE:-ghcr.io/gdc-framework/maps-cdn_v3:latest}
     ports:
       - "127.0.0.1:${MAPS_CDN_HOST_PORT:-8080}:8080"
     environment:

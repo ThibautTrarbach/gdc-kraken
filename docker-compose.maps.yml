@@ -1,7 +1,7 @@
 # Conteneur maps-cdn seul (autre serveur / isolation réseau).
 services:
   ocap-maps-cdn:
-    image: ${MAPS_CDN_IMAGE:-thibautblack/gdc-storm:maps-cdn}
+    image: ${MAPS_CDN_IMAGE:-ghcr.io/gdc-framework/maps-cdn_v3:latest}
     ports:
       # Override MAPS_CDN_BIND=0.0.0.0 si le CDN doit être joignable depuis l'extérieur.
       - "${MAPS_CDN_BIND:-127.0.0.1}:${MAPS_CDN_HOST_PORT:-8080}:8080"

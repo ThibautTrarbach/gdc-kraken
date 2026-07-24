@@ -1,5 +1,8 @@
 FROM python:3.12-slim
 
+LABEL org.opencontainers.image.source=https://github.com/GdC-Framework/gdc-kraken
+LABEL org.opencontainers.image.description="GDC Storm (Kraken) application"
+
 RUN apt-get update \
     && apt-get install -y --no-install-recommends gosu \
     && rm -rf /var/lib/apt/lists/*

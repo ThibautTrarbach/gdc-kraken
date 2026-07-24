@@ -5,7 +5,7 @@ set -eu
 ROOT="$(CDPATH= cd -- "$(dirname "$0")/.." && pwd)"
 cd "$ROOT"
 
-TAG="${1:-thibautblack/gdc-storm:latest}"
+TAG="${1:-ghcr.io/gdc-framework/storm_v3:latest}"
 MAX_CONTEXT_MB="${MAX_DOCKER_CONTEXT_MB:-200}"
 
 if [ -d ocap_maps ]; then
