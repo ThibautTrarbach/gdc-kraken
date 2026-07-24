@@ -1580,7 +1580,7 @@ def get_mission_mappings(missions):
 # Mission list view
 def mission_list(request):
     """Display the list of missions avec tri dynamique, y compris tri par nom de carte affiché."""
-    sort = request.GET.get('sort', 'id')  # Tri par défaut sur l'id de mission
+    sort = request.GET.get('sort', 'date')  # Tri par défaut sur la date de publication
     order = request.GET.get('order', 'desc')
     sort_fields = {
         'nom': 'name',
@@ -1595,7 +1595,7 @@ def mission_list(request):
         'derniere': 'last_played_at',
         'id': 'id',
     }
-    sort_field = sort_fields.get(sort, 'id')
+    sort_field = sort_fields.get(sort, 'publication_date')
 
     # Ajoute les infos "combien de fois jouée" + "dernière fois jouée" + taux de victoire
     missions_qs = Mission.objects.select_related('user').annotate(
