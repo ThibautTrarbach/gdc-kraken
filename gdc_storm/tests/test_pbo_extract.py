@@ -531,6 +531,53 @@ class TestPboExtract(unittest.TestCase):
         self.assertEqual(names, {'rally_north', 'zone'})
         self.assertTrue(any('technique' in p for p in problems))
 
+    def test_extract_markers_filters_hide_terrain_object_zones(self):
+        sqm = (
+            'version=12;\n'
+            'class Mission { class Entities { items=5;\n'
+            '  class Item0 { dataType="Logic"; class PositionInfo {\n'
+            '    position[]={1000,5,2000}; angles[]={0,0,0}; };\n'
+            '    areaSize[]={40,0,20}; areaIsRectangle=1;\n'
+            '    name="opfor_clean_base"; type="ModuleHideTerrainObjects_F"; };\n'
+            '  class Item1 { dataType="Marker"; position[]={1000,0,2000}; '
+            'name="opfor_clean_base"; markerType="RECTANGLE"; colorName="ColorYellow"; '
+            'a=40; b=20; };\n'
+            '  class Item2 { dataType="Marker"; position[]={1001,0,2001}; '
+            'name=""; markerType="ELLIPSE"; colorName="ColorYellow"; a=35; b=12; };\n'
+            '  class Item3 { dataType="Marker"; position[]={3000,0,4000}; '
+            'name="ao_main"; markerType="RECTANGLE"; text="AO"; colorName="ColorRed"; '
+            'a=200; b=100; };\n'
+            '  class Item4 { dataType="Marker"; position[]={5000,0,6000}; '
+            'name="cover"; markerType="moduleCoverMap"; colorName="ColorBlack"; '
+            'a=500; b=500; };\n'
+            '};};'
+        )
+        markers, problems = pbo_extract.extract_markers_from_sqm(sqm)
+        names = {m['name'] for m in markers}
+        self.assertEqual(names, {'ao_main'})
+        self.assertTrue(any('technique' in p for p in problems))
+
+    def test_is_marker_visible_filters_hide_terrain_type(self):
+        self.assertFalse(pbo_extract.is_marker_visible({
+            'name': 'zone_a',
+            'type': 'ModuleHideTerrainObjects_F',
+            'x': 1.0,
+            'z': 2.0,
+        }))
+        self.assertFalse(pbo_extract.is_marker_visible({
+            'name': 'viz',
+            'type': 'ellipse',
+            'icon': r'modules\HideTerrain\data\icon.paa',
+            'x': 1.0,
+            'z': 2.0,
+        }))
+        self.assertFalse(pbo_extract.is_marker_visible({
+            'name': 'map_cover',
+            'type': 'moduleCoverMap',
+            'x': 1.0,
+            'z': 2.0,
+        }))
+
     def test_extract_markers_zone_dimensions_and_icon(self):
         sqm = (
             'version=12;\n'

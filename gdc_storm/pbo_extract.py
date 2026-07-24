@@ -238,7 +238,8 @@ _MARKER_ANGLES_YAW_RE = re.compile(
 )
 
 # Seul le type "empty" reste invisible (placeholder Eden sans rendu).
-_HIDDEN_MARKER_TYPES = frozenset({'empty'})
+# moduleCoverMap / objectMarker : marqueurs techniques de modules Eden.
+_HIDDEN_MARKER_TYPES = frozenset({'empty', 'modulecovermap', 'objectmarker'})
 
 # Noms de spawn joueur Eden (respawn_west, spawn_east, …).
 _SPAWN_NAME_RE = re.compile(
@@ -254,6 +255,25 @@ _AI_LOGIC_NAME_RE = re.compile(
     r'^(?:bis_|zen_|module|hc_|wp\d|wp[_-]|waypoint|ace_|ai[_-]|ia[_-])',
     re.IGNORECASE,
 )
+
+# Hide Terrain Objects / classes module Arma (type, nom ou icône).
+_HIDE_TERRAIN_RE = re.compile(
+    r'hideterrain|modulehideterrain|modulecovermap',
+    re.IGNORECASE,
+)
+_MODULE_CLASS_TYPE_RE = re.compile(r'^module\w+_f$', re.IGNORECASE)
+
+_LOGIC_BLOCK_RE = re.compile(
+    r'dataType\s*=\s*"Logic"\s*;(.*?)(?=class\s+Item\d+\s*\{|dataType\s*=\s*"(?!Logic)|\Z)',
+    re.DOTALL,
+)
+_LOGIC_TYPE_RE = re.compile(r'\btype\s*=\s*"([^"]+)"', re.IGNORECASE)
+_HIDE_TERRAIN_LOGIC_TYPES = frozenset({
+    'modulehideterrainobjects_f',
+    'modulehideterrainobjects',
+})
+# Tolérance (m) pour associer une zone Marker à un module HideTerrainObjects.
+_HIDE_TERRAIN_COLOCATE_M = 3.0
 
 _TRANSPARENT_ALPHA_THRESHOLD = 0.01
 
@@ -1014,17 +1034,106 @@ def _parse_marker_alpha(strings: dict[str, str], block: str) -> float | None:
         return None
 
 
-def is_marker_visible(marker: dict) -> bool:
+def _marker_looks_like_hide_terrain(marker: dict) -> bool:
+    """True si type/nom/icône évoquent HideTerrainObjects ou CoverMap."""
+    marker_type = _normalize_marker_type(marker.get('type', ''))
+    name = (marker.get('name') or '').strip()
+    icon = (marker.get('icon') or '').strip()
+    if marker_type and (
+        _HIDE_TERRAIN_RE.search(marker_type)
+        or _MODULE_CLASS_TYPE_RE.match(marker_type)
+    ):
+        return True
+    if name and _HIDE_TERRAIN_RE.search(name):
+        return True
+    if icon and _HIDE_TERRAIN_RE.search(icon):
+        return True
+    return False
+
+
+def _extract_hide_terrain_logic_zones(sqm_content: str) -> list[dict]:
+    """Zones Logic ModuleHideTerrainObjects_F (centre + nom) depuis mission.sqm."""
+    zones: list[dict] = []
+    if not sqm_content:
+        return zones
+    for match in _LOGIC_BLOCK_RE.finditer(sqm_content):
+        block = match.group(1)
+        type_match = _LOGIC_TYPE_RE.search(block)
+        if not type_match:
+            continue
+        logic_type = type_match.group(1).strip().lower()
+        if logic_type not in _HIDE_TERRAIN_LOGIC_TYPES:
+            continue
+        pos_match = _MARKER_POSITION_RE.search(block)
+        if not pos_match:
+            continue
+        parts = [p.strip() for p in pos_match.group(1).split(',')]
+        if len(parts) < 3:
+            continue
+        try:
+            x = float(parts[0])
+            z = float(parts[2])
+        except ValueError:
+            continue
+        strings = {m.group(1): m.group(2) for m in _MARKER_STRING_FIELD_RE.finditer(block)}
+        zones.append({
+            'name': (strings.get('name') or '').strip(),
+            'x': x,
+            'z': z,
+        })
+    return zones
+
+
+def _marker_matches_hide_terrain_logic(marker: dict, hide_zones: list[dict]) -> bool:
+    """True si le marqueur reprend le nom ou la position d'un module HideTerrain.
+
+    La colocation ne s'applique qu'aux zones rectangle/ellipse **sans nom**,
+    pour ne pas masquer une AO nommée placée au même endroit (ex. area_5).
+    """
+    if not hide_zones or not isinstance(marker, dict):
+        return False
+    name = (marker.get('name') or '').strip().lower()
+    if name:
+        for zone in hide_zones:
+            zone_name = (zone.get('name') or '').strip().lower()
+            if zone_name and zone_name == name:
+                return True
+        return False
+    marker_type = _normalize_marker_type(marker.get('type', ''))
+    if marker_type not in ('rectangle', 'ellipse'):
+        return False
+    try:
+        mx = float(marker['x'])
+        mz = float(marker['z'])
+    except (KeyError, TypeError, ValueError):
+        return False
+    for zone in hide_zones:
+        try:
+            dx = mx - float(zone['x'])
+            dz = mz - float(zone['z'])
+        except (KeyError, TypeError, ValueError):
+            continue
+        if (dx * dx + dz * dz) <= (_HIDE_TERRAIN_COLOCATE_M * _HIDE_TERRAIN_COLOCATE_M):
+            return True
+    return False
+
+
+def is_marker_visible(marker: dict, *, hide_terrain_zones: list[dict] | None = None) -> bool:
     """False pour marqueurs invisibles, spawns, IA/modules ou transparents."""
     if not isinstance(marker, dict):
         return False
 
     marker_type = _normalize_marker_type(marker.get('type', ''))
     name = (marker.get('name') or '').strip()
-    text = (marker.get('text') or '').strip()
     name_lower = name.lower()
 
     if marker_type in _HIDDEN_MARKER_TYPES:
+        return False
+
+    if _marker_looks_like_hide_terrain(marker):
+        return False
+
+    if hide_terrain_zones and _marker_matches_hide_terrain_logic(marker, hide_terrain_zones):
         return False
 
     alpha = marker.get('alpha')
@@ -1168,6 +1277,7 @@ def extract_markers_from_sqm(sqm_content: str) -> tuple[list[dict], list[str]]:
         problems.append('mission.sqm vide ou illisible.')
         return markers, problems
 
+    hide_terrain_zones = _extract_hide_terrain_logic_zones(sqm_content)
     skipped = 0
     invalid = 0
     total_blocks = 0
@@ -1177,7 +1287,7 @@ def extract_markers_from_sqm(sqm_content: str) -> tuple[list[dict], list[str]]:
         if marker is None:
             invalid += 1
             continue
-        if not is_marker_visible(marker):
+        if not is_marker_visible(marker, hide_terrain_zones=hide_terrain_zones):
             skipped += 1
             continue
         markers.append(marker)
