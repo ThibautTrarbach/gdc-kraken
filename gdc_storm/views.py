@@ -3190,15 +3190,14 @@ def _build_stats_context():
         key=lambda x: -x['count'],
     )[:15]
 
-    # --- Top auteurs ---
+    # --- Top propriétaires (compte MM lié, pas le champ texte PBO authors) ---
     top_authors_raw = (
-        Mission.objects.exclude(authors='')
-        .exclude(authors='Non renseigné')
-        .values('authors')
+        Mission.objects.filter(user__isnull=False)
+        .values('user__username')
         .annotate(c=Count('id'))
         .order_by('-c')[:10]
     )
-    top_authors = [{'authors': a['authors'], 'count': a['c']} for a in top_authors_raw]
+    top_authors = [{'authors': a['user__username'], 'count': a['c']} for a in top_authors_raw]
 
     # Fun facts
     longest_session_info = None
