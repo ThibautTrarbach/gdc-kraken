@@ -1,6 +1,7 @@
 
 from django.urls import path
 from . import views
+from . import correction_views
 from . import legacy_views
 from django.contrib.auth import views as auth_views
 from django.http import HttpResponseRedirect
@@ -26,6 +27,9 @@ urlpatterns = [
     path('recup/scan-pbo/', views.scan_pbo_missing, name='scan_pbo_missing'),
     path('recup/scan-pbo/run/', views.scan_pbo_missing_run, name='scan_pbo_missing_run'),
     path('recup/scan-pbo/apply/', views.scan_pbo_missing_apply, name='scan_pbo_missing_apply'),
+    path('corrections/', correction_views.admin_corrections, name='admin_corrections'),
+    path('corrections/run/', correction_views.admin_corrections_run, name='admin_corrections_run'),
+    path('corrections/status/', correction_views.admin_corrections_status, name='admin_corrections_status'),
     path('missions/', views.mission_list, name='mission_list'),
     path('missions/<int:mission_id>/', views.mission_detail, name='mission_detail'),
     path('missions/<int:mission_id>/delete/', views.delete_mission, name='delete_mission'),

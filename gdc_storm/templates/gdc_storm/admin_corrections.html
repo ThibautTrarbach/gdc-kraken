@@ -1,0 +1,316 @@
+{% extends 'gdc_storm/base.html' %}
+{% block title %}Scripts de correction - GDC Storm{% endblock %}
+{% block content %}
+<style>
+.corr-container {
+  background:#fff;max-width:1100px;width:100%;margin:36px auto 0 auto;
+  padding:40px 56px 32px 56px;border-radius:18px;box-shadow:0 6px 32px #0002;box-sizing:border-box;
+}
+.corr-title { font-size:1.8em;font-weight:800;margin-bottom:8px;text-align:center; }
+.corr-grid { display:grid; grid-template-columns:1fr 1fr; gap:24px; margin-top:24px; }
+@media (max-width: 900px) {
+  .corr-container { padding:24px 8px 18px 8px !important; }
+  .corr-grid { grid-template-columns:1fr; }
+}
+.corr-card {
+  border:1px solid #e0e0e0; border-radius:12px; padding:20px 22px; background:#fafafa;
+}
+.corr-card h3 { margin:0 0 8px 0; font-size:1.15em; }
+.corr-card p { margin:0 0 14px 0; color:#555; font-size:0.92em; }
+.corr-field { margin-bottom:10px; }
+.corr-field label { display:block; font-weight:600; font-size:0.9em; margin-bottom:4px; }
+.corr-field input[type="text"],
+.corr-field input[type="number"] {
+  width:100%; box-sizing:border-box; padding:8px 10px; border:1px solid #ccc; border-radius:6px;
+}
+.corr-check { display:flex; align-items:center; gap:8px; margin:6px 0; font-size:0.92em; }
+.corr-check input { margin:0; }
+.corr-actions { margin-top:14px; display:flex; gap:10px; flex-wrap:wrap; }
+.corr-actions button {
+  border:none; border-radius:8px; padding:10px 18px; font-weight:700; cursor:pointer; font-size:0.95em;
+}
+.corr-btn-run { background:#1976d2; color:#fff; }
+.corr-btn-run:disabled { opacity:0.55; cursor:not-allowed; }
+.corr-status {
+  margin-top:28px; border:1px solid #e0e0e0; border-radius:12px; padding:18px 20px; background:#fff;
+}
+.corr-stats { display:flex; flex-wrap:wrap; gap:12px; margin:12px 0; }
+.corr-stat {
+  background:#f8f9fa; border:1px solid #e0e0e0; border-radius:10px;
+  padding:10px 16px; min-width:100px; text-align:center;
+}
+.corr-stat .n { font-size:1.3em; font-weight:800; }
+.corr-stat .l { font-size:0.82em; color:#666; margin-top:2px; }
+.corr-log {
+  background:#1e1e1e; color:#d4d4d4; font-family:ui-monospace,Consolas,monospace;
+  font-size:0.82em; line-height:1.4; padding:12px 14px; border-radius:8px;
+  max-height:320px; overflow:auto; white-space:pre-wrap; word-break:break-word;
+  margin-top:10px;
+}
+.corr-badge {
+  display:inline-block; padding:3px 10px; border-radius:6px; font-weight:700; font-size:0.85em;
+}
+.corr-badge-queued, .corr-badge-running { background:#e3f2fd; color:#1565c0; }
+.corr-badge-done { background:#e8f5e9; color:#2e7d32; }
+.corr-badge-error { background:#ffeaea; color:#b71c1c; }
+.corr-msg { text-align:center; margin:8px 0; font-weight:600; }
+.corr-msg-error { color:#b71c1c; }
+</style>
+<div class="corr-container">
+    <div class="corr-title">Scripts de correction PBO</div>
+    <p style="margin:0 0 8px 0;color:#555;text-align:center;">
+        Lance en arrière-plan une ré-extraction depuis les PBO stockés, ou une extraction des marqueurs.
+        Dry-run activé par défaut.
+    </p>
+
+    <div class="corr-grid">
+        <div class="corr-card" id="card-reextract">
+            <h3>Ré-extraction PBO</h3>
+            <p>Régénère briefing, loadScreen et/ou marqueurs (sans changer name/version/map).</p>
+            <div class="corr-check">
+                <input type="checkbox" id="re-dry-run" checked>
+                <label for="re-dry-run">Dry-run (simulation)</label>
+            </div>
+            <div class="corr-field">
+                <label for="re-mission-id">Mission ID (optionnel)</label>
+                <input type="number" id="re-mission-id" min="1" placeholder="Toutes">
+            </div>
+            <div class="corr-field">
+                <label for="re-map">Carte (optionnel)</label>
+                <input type="text" id="re-map" placeholder="ex. altis">
+            </div>
+            <div class="corr-check">
+                <input type="radio" name="re-only" id="re-only-all" value="" checked>
+                <label for="re-only-all">Tout (briefing + loadScreen + marqueurs)</label>
+            </div>
+            <div class="corr-check">
+                <input type="radio" name="re-only" id="re-only-briefing" value="briefing_only">
+                <label for="re-only-briefing">Briefing uniquement</label>
+            </div>
+            <div class="corr-check">
+                <input type="radio" name="re-only" id="re-only-markers" value="markers_only">
+                <label for="re-only-markers">Marqueurs uniquement</label>
+            </div>
+            <div class="corr-check">
+                <input type="radio" name="re-only" id="re-only-loadscreen" value="loadscreen_only">
+                <label for="re-only-loadscreen">LoadScreen uniquement</label>
+            </div>
+            <div class="corr-check">
+                <input type="checkbox" id="re-with-meta">
+                <label for="re-with-meta">Avec meta (authors / minPlayers / texts)</label>
+            </div>
+            <div class="corr-actions">
+                <button type="button" class="corr-btn-run" id="btn-reextract" data-job="reextract">Lancer</button>
+            </div>
+        </div>
+
+        <div class="corr-card" id="card-markers">
+            <h3>Extraction marqueurs</h3>
+            <p>Écrit le JSON marqueurs depuis les PBO. Ignore les missions déjà extraites sauf force / repair.</p>
+            <div class="corr-check">
+                <input type="checkbox" id="mk-dry-run" checked>
+                <label for="mk-dry-run">Dry-run (simulation)</label>
+            </div>
+            <div class="corr-field">
+                <label for="mk-mission-id">Mission ID (optionnel)</label>
+                <input type="number" id="mk-mission-id" min="1" placeholder="Toutes">
+            </div>
+            <div class="corr-field">
+                <label for="mk-map">Carte (optionnel)</label>
+                <input type="text" id="mk-map" placeholder="ex. altis">
+            </div>
+            <div class="corr-check">
+                <input type="checkbox" id="mk-force">
+                <label for="mk-force">Force (réécrire même si déjà extrait)</label>
+            </div>
+            <div class="corr-check">
+                <input type="checkbox" id="mk-repair">
+                <label for="mk-repair">Repair missing (JSON absent du disque)</label>
+            </div>
+            <div class="corr-actions">
+                <button type="button" class="corr-btn-run" id="btn-markers" data-job="extract_markers">Lancer</button>
+            </div>
+        </div>
+    </div>
+
+    {{ current_job|json_script:"initial-job-data" }}
+    <div class="corr-status" id="corr-status" {% if not current_job %}style="display:none;"{% endif %}>
+        <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;">
+            <strong>Job en cours / dernier job</strong>
+            <span class="corr-badge" id="stat-badge">—</span>
+            <span id="stat-type" style="color:#666;font-size:0.9em;"></span>
+        </div>
+        <div class="corr-msg" id="stat-message"></div>
+        <div class="corr-stats">
+            <div class="corr-stat"><div class="n" id="stat-processed">0</div><div class="l">Traitées</div></div>
+            <div class="corr-stat"><div class="n" id="stat-total">0</div><div class="l">Total</div></div>
+            <div class="corr-stat"><div class="n" id="stat-updated">0</div><div class="l">Mises à jour</div></div>
+            <div class="corr-stat"><div class="n" id="stat-skipped">0</div><div class="l">Ignorées</div></div>
+            <div class="corr-stat"><div class="n" id="stat-errors">0</div><div class="l">Erreurs</div></div>
+        </div>
+        <div class="corr-log" id="stat-log"></div>
+    </div>
+</div>
+
+<script>
+(function() {
+    function getCookie(name) {
+        const m = document.cookie.match(new RegExp('(?:^|; )' + name.replace(/([.$?*|{}()[\]\\/+^])/g, '\\$1') + '=([^;]*)'));
+        return m ? decodeURIComponent(m[1]) : '';
+    }
+
+    const statusBox = document.getElementById('corr-status');
+    const runBtns = document.querySelectorAll('.corr-btn-run');
+    let pollTimer = null;
+    let activeJobId = null;
+
+    function setButtonsDisabled(disabled) {
+        runBtns.forEach(function(btn) { btn.disabled = disabled; });
+    }
+
+    function badgeClass(status) {
+        if (status === 'done') return 'corr-badge corr-badge-done';
+        if (status === 'error') return 'corr-badge corr-badge-error';
+        return 'corr-badge corr-badge-running';
+    }
+
+    function renderJob(job) {
+        if (!job) return;
+        statusBox.style.display = '';
+        document.getElementById('stat-badge').className = badgeClass(job.status);
+        document.getElementById('stat-badge').textContent = job.status || '—';
+        document.getElementById('stat-type').textContent = job.job_type || '';
+        document.getElementById('stat-processed').textContent = job.processed || 0;
+        document.getElementById('stat-total').textContent = job.total || 0;
+        document.getElementById('stat-updated').textContent = job.updated || 0;
+        document.getElementById('stat-skipped').textContent = job.skipped || 0;
+        document.getElementById('stat-errors').textContent = job.errors || 0;
+        const logEl = document.getElementById('stat-log');
+        logEl.textContent = (job.lines || []).join('\n');
+        logEl.scrollTop = logEl.scrollHeight;
+        const msg = document.getElementById('stat-message');
+        msg.className = 'corr-msg';
+        if (job.status === 'error') {
+            msg.className = 'corr-msg corr-msg-error';
+            msg.textContent = job.error || 'Erreur';
+        } else if (job.status === 'done') {
+            msg.textContent = 'Terminé.';
+        } else if (job.status === 'running' || job.status === 'queued') {
+            msg.textContent = 'En cours…';
+        } else {
+            msg.textContent = '';
+        }
+    }
+
+    async function pollStatus() {
+        try {
+            let url = '{% url "admin_corrections_status" %}';
+            if (activeJobId) url += '?job_id=' + encodeURIComponent(activeJobId);
+            const resp = await fetch(url, { headers: { 'Accept': 'application/json' } });
+            const data = await resp.json();
+            if (!data.ok) return;
+            if (data.job) {
+                renderJob(data.job);
+                if (data.job.status === 'done' || data.job.status === 'error') {
+                    setButtonsDisabled(false);
+                    if (pollTimer) { clearInterval(pollTimer); pollTimer = null; }
+                }
+            }
+        } catch (e) { /* ignore transient poll errors */ }
+    }
+
+    function startPolling(jobId) {
+        activeJobId = jobId;
+        if (pollTimer) clearInterval(pollTimer);
+        pollStatus();
+        pollTimer = setInterval(pollStatus, 2000);
+    }
+
+    function collectReextractOptions() {
+        const only = (document.querySelector('input[name="re-only"]:checked') || {}).value || '';
+        const missionVal = document.getElementById('re-mission-id').value.trim();
+        return {
+            dry_run: document.getElementById('re-dry-run').checked,
+            mission_id: missionVal ? Number(missionVal) : null,
+            map: document.getElementById('re-map').value.trim() || null,
+            briefing_only: only === 'briefing_only',
+            markers_only: only === 'markers_only',
+            loadscreen_only: only === 'loadscreen_only',
+            with_meta: document.getElementById('re-with-meta').checked,
+        };
+    }
+
+    function collectMarkersOptions() {
+        const missionVal = document.getElementById('mk-mission-id').value.trim();
+        return {
+            dry_run: document.getElementById('mk-dry-run').checked,
+            mission_id: missionVal ? Number(missionVal) : null,
+            map: document.getElementById('mk-map').value.trim() || null,
+            force: document.getElementById('mk-force').checked,
+            repair_missing: document.getElementById('mk-repair').checked,
+        };
+    }
+
+    async function startJob(jobType) {
+        const options = jobType === 'reextract' ? collectReextractOptions() : collectMarkersOptions();
+        if (!options.dry_run) {
+            const ok = window.confirm(
+                'Dry-run désactivé : les données seront écrites. Continuer ?'
+            );
+            if (!ok) return;
+        }
+        setButtonsDisabled(true);
+        document.getElementById('stat-message').textContent = 'Démarrage…';
+        statusBox.style.display = '';
+        try {
+            const resp = await fetch('{% url "admin_corrections_run" %}', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                    'X-CSRFToken': getCookie('csrftoken') || '',
+                    'Accept': 'application/json',
+                },
+                body: JSON.stringify({ job_type: jobType, options: options }),
+            });
+            const data = await resp.json();
+            if (!data.ok) {
+                setButtonsDisabled(false);
+                const msg = document.getElementById('stat-message');
+                msg.className = 'corr-msg corr-msg-error';
+                msg.textContent = data.error || 'Échec du démarrage';
+                if (data.job) renderJob(data.job);
+                return;
+            }
+            renderJob(data.job);
+            startPolling(data.job.job_id);
+        } catch (e) {
+            setButtonsDisabled(false);
+            const msg = document.getElementById('stat-message');
+            msg.className = 'corr-msg corr-msg-error';
+            msg.textContent = 'Erreur réseau: ' + e;
+        }
+    }
+
+    document.getElementById('btn-reextract').addEventListener('click', function() {
+        startJob('reextract');
+    });
+    document.getElementById('btn-markers').addEventListener('click', function() {
+        startJob('extract_markers');
+    });
+
+    const initialEl = document.getElementById('initial-job-data');
+    if (initialEl) {
+        try {
+            const initialJob = JSON.parse(initialEl.textContent);
+            if (initialJob) {
+                renderJob(initialJob);
+                if (initialJob.status === 'queued' || initialJob.status === 'running') {
+                    setButtonsDisabled(true);
+                    startPolling(initialJob.job_id);
+                }
+            }
+        } catch (e) { /* ignore */ }
+    }
+})();
+</script>
+{% endblock %}
