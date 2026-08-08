@@ -1,9 +1,7 @@
 name: Publish images to GHCR
 
 on:
-  push:
-    branches: [main]
-    tags: ["v*"]
+  workflow_dispatch:
 
 permissions:
   contents: read
@@ -21,11 +19,11 @@ jobs:
       matrix:
         include:
           - name: storm
-            image: storm_v3
+            image: storm-core
             context: .
             file: ./Dockerfile
           - name: maps-cdn
-            image: maps-cdn_v3
+            image: storm-maps
             context: ./services/ocap_maps_cdn
             file: ./services/ocap_maps_cdn/Dockerfile
     steps:
@@ -48,7 +46,9 @@ jobs:
         with:
           images: ${{ env.REGISTRY }}/${{ env.IMAGE_OWNER }}/${{ matrix.image }}
           tags: |
-            type=raw,value=latest,enable={{is_default_branch}}
+            type=raw,value=latest
+            type=semver,pattern={{version}}
+            type=semver,pattern={{major}}.{{minor}}
             type=sha,prefix=,format=short
             type=ref,event=tag
 
